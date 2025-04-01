@@ -79,21 +79,26 @@ func _process(delta):
 			# Update water chunks if water system is enabled
 			if enable_water and water_system:
 				water_system.update_water_chunks(player_pos, view_distance, chunk_size)
-
-# Initialize water system
+				
 func initialize_water_system():
 	# Create water system node
 	water_system = load("res://WaterSystem.gd").new()
+	# Try using a direct instance instead of loading
+	# water_system = preload("res://WaterSystem.gd").new()
 	water_system.name = "WaterSystem"
 	water_system.water_level = water_level
 	water_system.water_chunk_size = chunk_size
-	
+
 	# Add to scene
 	add_child(water_system)
-	
-	# Create some initial rivers (demo purposes, can be generated procedurally)
-	create_demo_water_features()
 
+	# Initialize water chunks immediately
+	var player_pos = Vector3.ZERO
+	if has_node("Player"):
+		player_pos = $Player.global_position
+	water_system.update_water_chunks(player_pos, view_distance, chunk_size)
+	
+	
 # Creates some demo water features
 func create_demo_water_features():
 	# Example: Create a river from high elevation to low

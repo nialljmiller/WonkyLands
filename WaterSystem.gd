@@ -24,14 +24,19 @@ var rivers = []
 var fish_scenes = []
 var active_fish = []
 
+
 func _ready():
-	# Load fish scenes for spawning
-	# You'll need to create these scenes separately
-	# fish_scenes.append(load("res://Fish1.tscn"))
-	# fish_scenes.append(load("res://Fish2.tscn"))
-	
+	# Ensure fish scenes load correctly
+	print("Loading fish scenes...")
+	var fish1 = load("res://Fish1.tscn")
+	if fish1:
+		fish_scenes.append(fish1)
+		print("Fish1 loaded successfully")
+	else:
+		print("Failed to load Fish1.tscn")
+
 	# Setup water shader
-	pass
+	print("Water system initialized")
 
 func _process(delta):
 	# Update water waves using time and shader parameters
