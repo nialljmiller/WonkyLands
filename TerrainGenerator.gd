@@ -262,6 +262,7 @@ func add_player_to_scene():
 		
 		
 		
+# Modified apply_height_based_texturing function
 func apply_height_based_texturing():
 	# Create shader material for terrain
 	var terrain_material = ShaderMaterial.new()
@@ -271,15 +272,17 @@ func apply_height_based_texturing():
 	shader.code = """
 	shader_type spatial;
 
-	uniform sampler2D texture_low : source_color, repeat_enable;  // Water/beach
-	uniform sampler2D texture_mid : source_color, repeat_enable;  // Plains/grass
-	uniform sampler2D texture_high : source_color, repeat_enable; // Mountains
+	uniform float low_threshold = -10.0;    // Sand level
+	uniform float mid_threshold = 0.0;      // Grass level
+	uniform float high_threshold = 20.0;    // Rock level
+	uniform float snow_threshold = 35.0;    // Snow level
+	uniform float blend_range = 3.0;        // Blend zone between terrains
 
-	uniform float low_threshold = 0.0;
-	uniform float mid_threshold = 15.0;
-	uniform float high_threshold = 30.0;
-	uniform float blend_range = 5.0;
-	uniform float texture_scale = 20.0;
+	// Colors for each elevation
+	uniform vec3 sand_color = vec3(0.94, 0.83, 0.64);    // Light sand
+	uniform vec3 grass_color = vec3(0.33, 0.63, 0.22);   // Green grass
+	uniform vec3 rock_color = vec3(0.50, 0.45, 0.40);    // Gray rock
+	uniform vec3 snow_color = vec3(0.95, 0.95, 0.97);    // White snow
 
 	varying vec3 vertex_pos;
 
@@ -288,51 +291,52 @@ func apply_height_based_texturing():
 	}
 
 	void fragment() {
-		// Scale UV coordinates for tiling
-		vec2 scaled_uv = UV * texture_scale;
-		
-		// Height-based texturing
+		// Height-based coloring
 		float height = vertex_pos.y;
 		
 		// Calculate blend factors based on height
-		float low_factor = 1.0 - smoothstep(low_threshold, low_threshold + blend_range, height);
-		float mid_factor = smoothstep(low_threshold, low_threshold + blend_range, height) - 
-							smoothstep(mid_threshold, mid_threshold + blend_range, height);
-		float high_factor = smoothstep(mid_threshold, mid_threshold + blend_range, height);
+		float sand_factor = 1.0 - smoothstep(low_threshold, low_threshold + blend_range, height);
+		float grass_factor = smoothstep(low_threshold, low_threshold + blend_range, height) - 
+							smoothstep(mid_threshold + blend_range, high_threshold, height);
+		float rock_factor = smoothstep(mid_threshold + blend_range, high_threshold, height) - 
+							smoothstep(high_threshold, snow_threshold, height);
+		float snow_factor = smoothstep(high_threshold, snow_threshold, height);
 		
-		// Sample textures and blend
-		vec3 low_color = texture(texture_low, scaled_uv).rgb;
-		vec3 mid_color = texture(texture_mid, scaled_uv).rgb;
-		vec3 high_color = texture(texture_high, scaled_uv).rgb;
-		
-		// Combine textures based on height
-		vec3 final_color = low_color * low_factor + mid_color * mid_factor + high_color * high_factor;
+		// Combine colors based on height
+		vec3 final_color = sand_color * sand_factor + 
+						  grass_color * grass_factor + 
+						  rock_color * rock_factor + 
+						  snow_color * snow_factor;
 		
 		// Apply lighting
 		ALBEDO = final_color;
+		
+		// Add some roughness variation based on elevation
+		ROUGHNESS = mix(0.9, 0.1, snow_factor); // Snow is smoother than rock
+		
+		// Make the rock more specular
+		METALLIC = rock_factor * 0.2;
 	}
 	"""
 
 	terrain_material.shader = shader
 
-	# Create or load textures
-	var texture_low = load_texture("res://textures/sand.png")
-	var texture_mid = load_texture("res://textures/grass.png")
-	var texture_high = load_texture("res://textures/rock.png")
+	# Set shader parameters with more diverse elevation thresholds
+	terrain_material.set_shader_parameter("low_threshold", -10.0) # // Sand level
+	terrain_material.set_shader_parameter("mid_threshold", 0.0)   # // Grass level
+	terrain_material.set_shader_parameter("high_threshold", 20.0) # // Rock level
+	terrain_material.set_shader_parameter("snow_threshold", 35.0) # // Snow level
+	terrain_material.set_shader_parameter("blend_range", 3.0)     # // Blend zone
 
-	# Set shader parameters
-	terrain_material.set_shader_parameter("texture_low", texture_low)
-	terrain_material.set_shader_parameter("texture_mid", texture_mid)
-	terrain_material.set_shader_parameter("texture_high", texture_high)
-	terrain_material.set_shader_parameter("low_threshold", 0.0)
-	terrain_material.set_shader_parameter("mid_threshold", 15.0)
-	terrain_material.set_shader_parameter("high_threshold", 30.0)
-	terrain_material.set_shader_parameter("blend_range", 5.0)
-	terrain_material.set_shader_parameter("texture_scale", 20.0)
+	#// Set colors
+	terrain_material.set_shader_parameter("sand_color", Color(0.94, 0.83, 0.64))  #// Sand
+	terrain_material.set_shader_parameter("grass_color", Color(0.33, 0.63, 0.22)) #// Grass
+	terrain_material.set_shader_parameter("rock_color", Color(0.50, 0.45, 0.40))  #// Rock
+	terrain_material.set_shader_parameter("snow_color", Color(0.95, 0.95, 0.97))  #// Snow
 
-	# Apply material to terrain mesh
+	#// Apply material to terrain mesh
 	mesh_instance.material_override = terrain_material
-
+		
 	
 # Modified texture loading function
 func load_texture(path):
