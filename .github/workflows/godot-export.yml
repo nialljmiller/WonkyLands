@@ -23,13 +23,80 @@ jobs:
           mkdir -p ~/.local/share/godot/export_templates/4.2.2.stable
           cp -r /root/.local/share/godot/export_templates/4.2.2.stable/* ~/.local/share/godot/export_templates/4.2.2.stable/
 
+      - name: Create export presets
+        run: |
+          mkdir -p .godot/
+          cat > export_presets.cfg << EOL
+          [preset.0]
+          name="Windows Desktop"
+          platform="Windows Desktop"
+          runnable=true
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter=""
+          export_path="build/windows/WonkyLands.exe"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          encrypt_pck=false
+          encrypt_directory=false
+
+          [preset.0.options]
+          custom_template/debug=""
+          custom_template/release=""
+          debug/export_console_wrapper=1
+          binary_format/embed_pck=true
+          texture_format/bptc=true
+          texture_format/s3tc=true
+          texture_format/etc=false
+          texture_format/etc2=false
+          binary_format/architecture="x86_64"
+          codesign/enable=false
+          codesign/timestamp=true
+          application/icon=""
+          application/file_version=""
+          application/product_version=""
+          application/company_name=""
+          application/product_name=""
+          application/file_description=""
+          application/copyright=""
+          application/trademarks=""
+
+          [preset.1]
+          name="Linux/X11"
+          platform="Linux/X11"
+          runnable=true
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter=""
+          export_path="build/linux/WonkyLands.x86_64"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          encrypt_pck=false
+          encrypt_directory=false
+
+          [preset.1.options]
+          custom_template/debug=""
+          custom_template/release=""
+          debug/export_console_wrapper=1
+          binary_format/embed_pck=true
+          texture_format/bptc=true
+          texture_format/s3tc=true
+          texture_format/etc=false
+          texture_format/etc2=false
+          binary_format/architecture="x86_64"
+          EOL
+
       - name: Export project
         run: |
           mkdir -p build/windows
           mkdir -p build/linux
           
-          godot --headless --export-release "Windows Desktop" build/windows/WonkyLands.exe
-          godot --headless --export-release "Linux/X11" build/linux/WonkyLands.x86_64
+          godot --headless --export-release "Windows Desktop"
+          godot --headless --export-release "Linux/X11"
           
           chmod +x build/linux/WonkyLands.x86_64
 
