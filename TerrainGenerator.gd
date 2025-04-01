@@ -218,8 +218,8 @@ func implement_terrain_collision():
 
 	# Return reference for further configuration
 	return static_body
-
-# Modified add_player_to_scene function
+	
+	
 func add_player_to_scene():
 	# Create player character
 	var player = CharacterBody3D.new()
@@ -257,7 +257,11 @@ func add_player_to_scene():
 		player.add_child(camera)
 		camera.position = Vector3(0, 0.7, 0)  # Position it at the player's head level
 
-# Add to TerrainGenerator script
+		# Disable the camera's own movement script
+		camera.set_script(null)
+		
+		
+		
 func apply_height_based_texturing():
 	# Create shader material for terrain
 	var terrain_material = ShaderMaterial.new()
