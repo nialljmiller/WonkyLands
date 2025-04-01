@@ -9,6 +9,9 @@ extends Node3D
 # Biome parameters
 @export var enable_biomes: bool = true
 @export var biome_scale: float = 0.005  # Scale of biome transitions
+# Add tree system to export variables (add near the top with other export variables)
+@export var enable_trees: bool = true
+@export var tree_density: float = 0.5  # Trees per 100 square units
 
 # Water settings
 @export var enable_water: bool = true
@@ -20,6 +23,19 @@ var noise = FastNoiseLite.new()
 var biome_noise = FastNoiseLite.new()  # For biome selection
 var loaded_chunks = {}  # Dictionary to store active chunks
 var current_chunk = Vector2.ZERO  # Current chunk the player is in
+var tree_system = null
+
+# In the _ready() function, add initialization of the tree system
+func initialize_tree_system():
+	if enable_trees:
+		# Create tree system node
+		tree_system = load("res://TreeSystem.gd").new()
+		tree_system.name = "TreeSystem"
+		tree_system.tree_density = tree_density
+		tree_system.terrain_generator = self  # Pass reference to self
+
+		# Add to scene
+		add_child(tree_system)
 
 # Biome types
 enum BiomeType {
@@ -30,6 +46,7 @@ enum BiomeType {
 	VOLCANIC_WASTELAND
 }
 
+# Update the _ready() function to call initialize_tree_system()
 func _ready():
 	# Setup noise generator
 	noise.seed = randi()
@@ -50,6 +67,10 @@ func _ready():
 	# Initialize water system
 	if enable_water:
 		initialize_water_system()
+		
+	# Initialize tree system
+	if enable_trees:
+		initialize_tree_system()
 
 	# Add player to scene
 	add_player_to_scene()
@@ -60,6 +81,7 @@ func _ready():
 		initial_position = $Player.global_position
 	update_terrain_chunks(initial_position)
 
+# In the _process function, add updating of tree chunks
 func _process(delta):
 	# Check if player exists
 	var player = get_node_or_null("Player")
@@ -80,6 +102,11 @@ func _process(delta):
 			if enable_water and water_system:
 				water_system.update_water_chunks(player_pos, view_distance, chunk_size)
 				
+			# Update tree chunks if tree system is enabled
+			if enable_trees and tree_system:
+				tree_system.update_tree_chunks(player_pos, view_distance, chunk_size)
+
+	
 func initialize_water_system():
 	# Create water system node
 	water_system = load("res://WaterSystem.gd").new()
@@ -219,6 +246,14 @@ func generate_terrain_chunk(chunk_pos: Vector2):
 	
 	# Store chunk in dictionary
 	loaded_chunks[chunk_pos] = chunk_node
+
+	if enable_trees and tree_system:
+		var chunk_biome = determine_biome(chunk_center)
+		tree_system.place_trees_in_chunk(chunk_node, chunk_pos, chunk_biome)
+		
+
+
+
 
 # Removes a chunk that's outside the view distance
 func remove_terrain_chunk(chunk_pos: Vector2):
