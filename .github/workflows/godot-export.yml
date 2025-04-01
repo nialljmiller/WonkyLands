@@ -22,8 +22,24 @@ jobs:
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v1
         with:
-          version: 4.4
+          # Use proper version format (major.minor.patch)
+          version: 4.0.3
           use-dotnet: false
+      
+      - name: Install Godot 4.4
+        run: |
+          # Manual installation of Godot 4.4
+          mkdir -p ~/godot
+          cd ~/godot
+          wget https://github.com/godotengine/godot/releases/download/4.4-stable/Godot_v4.4-stable_linux.x86_64.zip
+          unzip Godot_v4.4-stable_linux.x86_64.zip
+          chmod +x Godot_v4.4-stable_linux.x86_64
+          # Add to PATH
+          echo "~/godot" >> $GITHUB_PATH
+          # Rename to 'godot' for easier reference
+          mv Godot_v4.4-stable_linux.x86_64 godot
+          # Verify installation
+          ~/godot/godot --version || true
       
       - name: Get project info
         id: project-info
@@ -33,14 +49,14 @@ jobs:
           
       - name: Create export templates directory
         run: |
-          mkdir -p ~/.local/share/godot/export_templates/4.4
+          mkdir -p ~/.local/share/godot/export_templates/4.4.0.stable
           
       - name: Download and install export templates
         run: |
           wget https://github.com/godotengine/godot/releases/download/4.4-stable/Godot_v4.4-stable_export_templates.tpz
-          unzip Godot_v4.4-stable_export_templates.tpz -d ~/.local/share/godot/export_templates/4.4
-          mv ~/.local/share/godot/export_templates/4.4/templates/* ~/.local/share/godot/export_templates/4.4/
-          rmdir ~/.local/share/godot/export_templates/4.4/templates
+          unzip Godot_v4.4-stable_export_templates.tpz -d ~/.local/share/godot/export_templates/4.4.0.stable
+          mv ~/.local/share/godot/export_templates/4.4.0.stable/templates/* ~/.local/share/godot/export_templates/4.4.0.stable/
+          rmdir ~/.local/share/godot/export_templates/4.4.0.stable/templates
       
       - name: Create export presets
         run: |
@@ -149,8 +165,8 @@ jobs:
         run: |
           mkdir -p build/windows
           mkdir -p build/linux
-          godot --headless --export-release "Windows Desktop" --quiet
-          godot --headless --export-release "Linux/X11" --quiet
+          ~/godot/godot --headless --export-release "Windows Desktop" --quiet
+          ~/godot/godot --headless --export-release "Linux/X11" --quiet
           chmod +x build/linux/${{ steps.project-info.outputs.PROJECT_NAME }}.x86_64
       
       - name: Create release artifacts
