@@ -21,6 +21,17 @@ var tree_prefabs = {}
 var tree_positions = {}
 var active_trees = []
 
+
+# Define elevation ranges for tree types
+var tree_elevation_ranges = {
+	"pine": {"min": 15.0, "max": 100.0},  # Pines at higher elevations
+	"oak": {"min": 2.0, "max": 20.0},     # Oaks at medium elevations
+	"palm": {"min": 0.0, "max": 10.0},    # Palms near water level
+	"dead": {"min": 5.0, "max": 50.0},    # Dead trees range
+	"cactus": {"min": 0.0, "max": 15.0}   # Cacti in lowlands
+}
+
+
 # Reference to parent terrain generator
 var terrain_generator
 
@@ -28,7 +39,8 @@ func _ready():
 	# Immediately setup tree prefabs
 	setup_tree_prefabs()
 
-# Create and setup the tree prefabs for different biomes
+
+# Make sure these registrations match your desired biome rules
 func setup_tree_prefabs():
 	# First, let's create our base tree resources
 	create_pine_tree()
@@ -36,14 +48,14 @@ func setup_tree_prefabs():
 	create_palm_tree()
 	create_dead_tree()
 	create_cactus()
-	
-	# Register trees with their respective biomes
-	register_tree_for_biome("pine", "SNOWY_MOUNTAINS")
-	register_tree_for_biome("pine", "TEMPERATE_FOREST")
-	register_tree_for_biome("oak", "TEMPERATE_FOREST")
-	register_tree_for_biome("palm", "TROPICAL_JUNGLE")
-	register_tree_for_biome("dead", "VOLCANIC_WASTELAND")
-	register_tree_for_biome("cactus", "DESERT")
+
+	# Clear any existing registrations
+	tree_prefabs["TEMPERATE_FORESTs"] = ["oak", "pine"]  # Both in temperate forests
+	tree_prefabs["SNOWY_MOUNTAINS"] = ["pine"]  # Only pine in snowy mountains
+	tree_prefabs["DESERT"] = ["cactus"]  # Only cacti in desert
+	tree_prefabs["TROPICAL_JUNGLE"] = ["palm"]  # Only palms in jungle
+	tree_prefabs["VOLCANIC_WASTELAND"] = ["dead"]  # Only dead trees in wasteland
+
 
 # Create a simple pine tree mesh
 func create_pine_tree():
@@ -343,25 +355,27 @@ func biome_type_to_string(biome_type) -> String:
 		4: return "VOLCANIC_WASTELAND"
 		_: return "TEMPERATE_FOREST"  # Default
 
-# Place trees for a specific chunk
+
+# Place trees for a specific chunk with improved elevation handling
 func place_trees_in_chunk(chunk_node: Node3D, chunk_pos: Vector2, biome_type, terrain_heightmap = null):
 	# Get world position for this chunk
 	var chunk_size = terrain_generator.chunk_size
 	var world_pos_x = chunk_pos.x * chunk_size
 	var world_pos_z = chunk_pos.y * chunk_size
-	
-	# Skip water chunks
-	if terrain_generator.water_level > 0 and world_pos_x < terrain_generator.water_level:
-		return
-	
+
+	# Get water level from terrain generator
+	var water_level = terrain_generator.water_level
+
 	# Seed random number generator based on chunk position for consistency
 	seed((chunk_pos.x * 1000 + chunk_pos.y) as int)
-	
+
 	# Calculate number of trees based on density and biome
 	var base_num_trees = int(chunk_size * chunk_size * tree_density / 100.0)
-	
+
 	# Adjust tree density based on biome
 	var biome_density_multiplier = 1.0
+	var biome_name = biome_type_to_string(biome_type)
+
 	match biome_type:
 		0:  # TEMPERATE_FOREST
 			biome_density_multiplier = 1.5
@@ -369,58 +383,60 @@ func place_trees_in_chunk(chunk_node: Node3D, chunk_pos: Vector2, biome_type, te
 			biome_density_multiplier = 0.2
 		2:  # SNOWY_MOUNTAINS
 			biome_density_multiplier = 0.8
+			if randf() < 0.9:  # 90% chance for pines in snowy areas
+				tree_prefabs[biome_name] = ["pine"]
 		3:  # TROPICAL_JUNGLE
 			biome_density_multiplier = 2.0
 		4:  # VOLCANIC_WASTELAND
 			biome_density_multiplier = 0.3
-	
+
 	var num_trees = int(base_num_trees * biome_density_multiplier)
 	var placed_positions = []
-	
+
 	# Track this chunk's trees
 	tree_positions[chunk_pos] = []
-	
+
 	# Try to place trees
 	var attempts = 0
 	var max_attempts = num_trees * 5  # Allow multiple attempts per tree
-	
+
 	while placed_positions.size() < num_trees and attempts < max_attempts:
 		attempts += 1
-		
+
 		# Generate random position within chunk
 		var local_x = randf_range(0, chunk_size)
 		var local_z = randf_range(0, chunk_size)
-		
+
 		var world_x = world_pos_x + local_x
 		var world_z = world_pos_z + local_z
-		
+
 		# Get terrain height at this position
-		var terrain_height
-		if terrain_heightmap:
-			# Use provided heightmap if available
-			var map_x = int(local_x) 
-			var map_z = int(local_z)
-			if map_x < terrain_heightmap.size() and map_z < terrain_heightmap[map_x].size():
-				terrain_height = terrain_heightmap[map_x][map_z]
-			else:
-				terrain_height = calculate_terrain_height(world_x, world_z)
-		else:
-			# Calculate height using same method as terrain generator
-			terrain_height = calculate_terrain_height(world_x, world_z)
-		
-		# Skip if underwater
-		if terrain_height < terrain_generator.water_level:
+		var terrain_height = calculate_terrain_height(world_x, world_z)
+
+		# Skip if underwater - add extra margin to ensure trees aren't partially submerged
+		if terrain_height < water_level + 0.5:
 			continue
 			
-		# Skip if too high or too low
-		if terrain_height < min_height or terrain_height > max_height:
+		# Determine appropriate tree type based on biome and elevation
+		var valid_tree_types = []
+		var all_biome_trees = tree_prefabs[biome_name] if biome_name in tree_prefabs else ["oak"] # Default
+
+		# Filter tree types based on elevation
+		for tree_type in all_biome_trees:
+			if tree_type in tree_elevation_ranges:
+				var range_data = tree_elevation_ranges[tree_type]
+				if terrain_height >= range_data["min"] and terrain_height <= range_data["max"]:
+					valid_tree_types.append(tree_type)
+
+		# If no valid tree type for this elevation, skip
+		if valid_tree_types.size() == 0:
 			continue
-		
+			
 		# Calculate slope at this position
 		var slope = calculate_terrain_slope(world_x, world_z)
 		if slope > max_slope_angle:
 			continue
-		
+
 		# Check minimum distance to other trees
 		var too_close = false
 		for pos in placed_positions:
@@ -428,22 +444,24 @@ func place_trees_in_chunk(chunk_node: Node3D, chunk_pos: Vector2, biome_type, te
 			if dist < min_distance_between_trees:
 				too_close = true
 				break
-		
+
 		if too_close:
 			continue
-		
+
 		# All checks passed, place a tree
 		var pos = Vector3(world_x, terrain_height, world_z)
 		placed_positions.append(pos)
 		tree_positions[chunk_pos].append(pos)
-		
-		# Create the tree
-		create_tree_at_position(pos, biome_type, chunk_node)
-	
+
+		# Create the tree with a specific type from valid types
+		var selected_tree_type = valid_tree_types[randi() % valid_tree_types.size()]
+		create_tree_at_position(pos, selected_tree_type, chunk_node)
+
 	# Debug output
 	if placed_positions.size() > 0:
 		print("Placed ", placed_positions.size(), " trees in chunk ", chunk_pos)
-
+		
+		
 # Calculate terrain height at given world position
 func calculate_terrain_height(world_x: float, world_z: float) -> float:
 	# Use same noise and settings as terrain generator
@@ -481,32 +499,33 @@ func calculate_terrain_slope(world_x: float, world_z: float) -> float:
 	
 	return angle
 
-# Create and place tree at specific position
-func create_tree_at_position(position: Vector3, biome_type, parent_node: Node3D):
-	# Get appropriate tree type for this biome
-	var tree_type = get_random_tree_for_biome(biome_type)
-	
+
+
+
+
+# Create and place tree at specific position with specified type
+func create_tree_at_position(position: Vector3, tree_type: String, parent_node: Node3D):
 	if not tree_type in tree_prefabs:
 		push_error("Tree type '", tree_type, "' not found!")
 		return
-	
+
 	# Instance the tree prefab
 	var tree_node = tree_prefabs[tree_type].duplicate()
-	
+
 	# Apply random variations
 	var scale_factor = 1.0 + randf_range(-tree_scale_variation, tree_scale_variation)
 	tree_node.scale = Vector3(scale_factor, scale_factor, scale_factor)
-	
+
 	# Apply random rotation around Y axis
 	tree_node.rotation_degrees.y = randf_range(0, tree_rotation_variation)
-	
+
 	# Set position
 	tree_node.position = position
-	
+
 	# Add to parent
 	parent_node.add_child(tree_node)
 	active_trees.append(tree_node)
-	
+
 	return tree_node
 
 # Update tree chunks when terrain chunks change

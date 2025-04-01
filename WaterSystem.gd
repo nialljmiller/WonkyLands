@@ -260,9 +260,6 @@ func create_waterfall(position: Vector3, height: float, width: float = 5.0):
 	var waterfall_instance = MeshInstance3D.new()
 	return waterfall_instance
 
-# WATER PHYSICS INTERACTIONS
-
-# Signal handling for player entering water
 func _on_body_entered_water(body):
 	if body.name == "Player":
 		apply_water_physics(body, true)
