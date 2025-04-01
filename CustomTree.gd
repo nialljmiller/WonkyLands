@@ -1,6 +1,6 @@
 extends StaticBody3D
 
-class_name Tree
+class_name CustomTree
 
 # Tree properties
 @export var tree_type: String = "oak"
