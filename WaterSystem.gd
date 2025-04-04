@@ -24,19 +24,67 @@ var rivers = []
 var fish_scenes = []
 var active_fish = []
 
-
 func _ready():
-	# Ensure fish scenes load correctly
+	# Setup water shader
+	print("Water system initialized")
+	
+	# Initialize fish scenes
+	load_fish_scenes()
+
+# Load fish scene files
+func load_fish_scenes():
 	print("Loading fish scenes...")
-	var fish1 = load("res://Fish1.tscn")
+	
+	# First, create the fish scene file if it doesn't exist already
+	ensure_fish_scene_exists()
+	
+	# Try to load the fish scene
+	var fish_scene_path = "res://Fish1.tscn"
+	var fish1 = load(fish_scene_path)
+	
 	if fish1:
 		fish_scenes.append(fish1)
 		print("Fish1 loaded successfully")
 	else:
-		print("Failed to load Fish1.tscn")
+		print("Failed to load Fish1.tscn - trying alternative approach")
+		
+		# Try using ResourceLoader instead
+		var fish1_packed = ResourceLoader.load(fish_scene_path, "", ResourceLoader.CACHE_MODE_REPLACE)
+		if fish1_packed:
+			fish_scenes.append(fish1_packed)
+			print("Fish1 loaded successfully with ResourceLoader")
+		else:
+			print("All attempts to load Fish1.tscn failed")
 
-	# Setup water shader
-	print("Water system initialized")
+# Make sure the fish scene exists as a proper scene file
+func ensure_fish_scene_exists():
+	# Check if Fish1.tscn already exists
+	if FileAccess.file_exists("res://Fish1.tscn"):
+		print("Fish1.tscn already exists")
+		return
+		
+	print("Creating Fish1.tscn file...")
+	
+	# If the fish scene doesn't exist, we'll create it from the template
+	var template_content = """[gd_scene load_steps=2 format=3 uid="uid://b4wx60ukl38hh"]
+
+[ext_resource type="Script" path="res://Fish.gd" id="1_fish"]
+
+[node name="Fish1" type="CharacterBody3D"]
+script = ExtResource("1_fish")
+fish_color = Color(0.3, 0.6, 0.9, 1)
+fish_size = Vector3(0.4, 0.15, 0.08)
+swim_speed = 1.2
+"""
+
+	# Save the content to the scene file
+	var file = FileAccess.open("res://Fish1.tscn", FileAccess.WRITE)
+	if file:
+		file.store_string(template_content)
+		file.close()
+		print("Created Fish1.tscn successfully")
+	else:
+		push_error("Failed to create Fish1.tscn file")
 
 func _process(delta):
 	# Update water waves using time and shader parameters
@@ -188,7 +236,7 @@ void fragment() {
 	
 	# Spawn fish in this water chunk (with random chance)
 	if randf() < 0.3 and len(fish_scenes) > 0:  # 30% chance to spawn fish
-		spawn_fish(water_mesh_instance.global_position, 2 + randi() % 4)  # 2-5 fish
+		spawn_fish(water_mesh_instance.global_position, 20 + randi() % 2)  # 2-5 fish
 
 # Removes a water chunk
 func remove_water_chunk(chunk_pos: Vector2):
@@ -243,17 +291,127 @@ func create_river_mesh(path: Array, width: float) -> MeshInstance3D:
 	# River mesh implementation remains unchanged...
 	var river_instance = MeshInstance3D.new()
 	return river_instance
-
+	
+	
+	
 # Spawns a fish of random type at position
 func spawn_fish(pos: Vector3, count: int = 1):
-	# Fish spawning implementation remains unchanged...
-	pass
+	if fish_scenes.size() == 0:
+		print("ERROR: No fish scenes available to spawn fish")
+		return
+	
+	print("Spawning " + str(count) + " fish at position: " + str(pos))
+	
+	# Create fish parent node if it doesn't exist
+	var fish_parent = get_node_or_null("FishParent")
+	if not fish_parent:
+		fish_parent = Node3D.new()
+		fish_parent.name = "FishParent"
+		add_child(fish_parent)
+	
+	# Spawn the requested number of fish
+	for i in range(count):
+		# Choose a random fish type
+		var fish_scene = fish_scenes[randi() % fish_scenes.size()]
+		
+		# Instance the fish
+		var fish_instance = fish_scene.instantiate()
+		if not fish_instance:
+			print("ERROR: Failed to instantiate fish scene")
+			continue
+		
+		# Randomize position slightly
+		var random_offset = Vector3(
+			randf_range(-5.0, 5.0),
+			randf_range(-2.0, -0.5),  # Keep fish below water surface
+			randf_range(-5.0, 5.0)
+		)
+		
+		# Set position (make sure it's below water level)
+		var fish_pos = pos + random_offset
+		fish_pos.y = min(fish_pos.y, water_level - 1.0)  # Keep at least 1 unit below water
+		fish_instance.position = fish_pos
+		
+		# Add to scene
+		fish_parent.add_child(fish_instance)
+		active_fish.append(fish_instance)
+		
+		print("Fish spawned at: " + str(fish_pos))
 
 # Updates fish positions based on water flow
 func update_fish(delta):
-	# Fish update implementation remains unchanged...
-	pass
+	var fish_to_remove = []
+	
+	# Check each active fish
+	for fish in active_fish:
+		if not is_instance_valid(fish):
+			fish_to_remove.append(fish)
+			continue
+		
+		# Keep fish below water level
+		if fish.position.y > water_level - 0.5:
+			fish.position.y = water_level - 0.5
+			
+		# Check if fish is too far from any water chunk
+		var too_far = true
+		var player = get_node_or_null("/root/TerrainGenerator/Player")
+		
+		if player:
+			# Only keep fish near the player
+			var distance_to_player = fish.position.distance_to(player.position)
+			if distance_to_player > 200.0:
+				fish_to_remove.append(fish)
+				continue
+			elif distance_to_player < 150.0:
+				too_far = false
+		
+		# If fish is too far from water, mark for removal
+		if too_far:
+			fish_to_remove.append(fish)
+	
+	# Remove fish that are too far or invalid
+	for fish in fish_to_remove:
+		if is_instance_valid(fish):
+			fish.queue_free()
+		active_fish.erase(fish)
+	
+	# Spawn more fish if needed
+	ensure_minimum_fish_population()
 
+# Make sure we have a minimum number of fish in the scene
+func ensure_minimum_fish_population():
+	var player = get_node_or_null("/root/TerrainGenerator/Player")
+	if not player:
+		return
+		
+	# Only maintain fish population when player is near water
+	var player_pos = player.position
+	var player_in_water = player_pos.y < water_level + 1.0
+	
+	# Check current fish count
+	var current_fish_count = active_fish.size()
+	var desired_fish_count = 25  # Target number of fish in the scene
+	
+	if current_fish_count < desired_fish_count and player_in_water:
+		# Find a water chunk near the player to spawn fish
+		var closest_chunk = null
+		var closest_dist = 100000.0
+		
+		for chunk_pos in water_chunks:
+			var water_mesh = water_chunks[chunk_pos]
+			if is_instance_valid(water_mesh):
+				var dist = water_mesh.position.distance_to(player_pos)
+				if dist < closest_dist:
+					closest_dist = dist
+					closest_chunk = water_mesh
+		
+		# Spawn new fish in the closest water chunk
+		if closest_chunk and closest_dist < 150.0:
+			var spawn_count = 5  # Spawn in groups
+			var spawn_pos = closest_chunk.position
+			spawn_pos.y = water_level - 2.0  # 2 units below water surface
+			spawn_fish(spawn_pos, spawn_count)
+			
 # Create a waterfall at the specified position with height and width
 func create_waterfall(position: Vector3, height: float, width: float = 5.0):
 	# Waterfall implementation remains unchanged...
