@@ -31,30 +31,6 @@ var loaded_chunks = {}  # Dictionary to store active chunks
 var current_chunk = Vector2.ZERO  # Current chunk the player is in
 var tree_system = null
 
-# In the _ready() function, add initialization of the tree system
-func initialize_tree_system():
-	if enable_trees:
-		# Create tree system node
-		tree_system = load("res://TreeSystem.gd").new()
-		tree_system.name = "TreeSystem"
-		tree_system.tree_density = tree_density
-		tree_system.terrain_generator = self  # Pass reference to self
-
-		# Add to scene
-		add_child(tree_system)
-
-# Initialize astronomical system
-func initialize_astronomical_system():
-	if enable_astronomical_system:
-		# Create astronomical system node
-		astronomical_system = load("res://AstronomicalSystem.gd").new()
-		astronomical_system.name = "AstronomicalSystem"
-		astronomical_system.day_length = day_length
-		astronomical_system.start_time = start_time
-		
-		# Add to scene
-		add_child(astronomical_system)
-
 # Biome types
 enum BiomeType {
 	TEMPERATE_FOREST,
@@ -64,7 +40,6 @@ enum BiomeType {
 	VOLCANIC_WASTELAND
 }
 
-# Update the _ready() function to call initialize_astronomical_system()
 func _ready():
 	# Setup noise generator
 	noise.seed = randi()
@@ -76,7 +51,7 @@ func _ready():
 	biome_noise.fractal_octaves = 3
 	biome_noise.frequency = 0.01
 
-	# Initialize astronomical system (replacing add_celestial_elements and add_sky_environment)
+	# Initialize astronomical system first
 	if enable_astronomical_system:
 		initialize_astronomical_system()
 	else:
@@ -84,24 +59,29 @@ func _ready():
 		add_sky_environment()
 		add_celestial_elements()
 	
-	# Initialize water system
+	# Initialize water system (before terrain)
 	if enable_water:
 		initialize_water_system()
-		
-	# Initialize tree system
-	if enable_trees:
-		initialize_tree_system()
-
-	# Add player to scene
 	
-	# Generate initial chunks
+	# Add player to scene
+	add_player_to_scene()
+	
+	# Generate initial terrain chunks BEFORE tree system
 	var initial_position = Vector3.ZERO
 	if has_node("Player"):
 		initial_position = $Player.global_position
 	update_terrain_chunks(initial_position)
-	add_player_to_scene()
+	
+	# Initialize tree system AFTER terrain is generated
+	if enable_trees:
+		# Create a timer to delay tree system initialization
+		var timer = Timer.new()
+		timer.one_shot = true
+		timer.wait_time = 0.5  # Short delay to ensure terrain loads first
+		timer.autostart = true
+		add_child(timer)
+		timer.timeout.connect(func(): initialize_tree_system())
 
-# In the _process function, add updating of tree chunks
 func _process(delta):
 	# Check if player exists
 	var player = get_node_or_null("Player")
@@ -116,22 +96,51 @@ func _process(delta):
 		# If player moved to a new chunk, update visible chunks
 		if player_chunk != current_chunk:
 			current_chunk = player_chunk
+			
+			# Update terrain chunks FIRST
 			update_terrain_chunks(player_pos)
 			
-			# Update water chunks if water system is enabled
+			# Update water chunks AFTER terrain
 			if enable_water and water_system:
 				water_system.update_water_chunks(player_pos, view_distance, chunk_size)
 				
-			# Update tree chunks if tree system is enabled
+			# Update tree chunks LAST, after terrain is updated
 			if enable_trees and tree_system:
 				tree_system.update_tree_chunks(player_pos, view_distance, chunk_size)
 
-	
+# Initialize tree system
+func initialize_tree_system():
+	if enable_trees:
+		# Create tree system node
+		tree_system = load("res://TreeSystem.gd").new()
+		tree_system.name = "TreeSystem"
+		tree_system.tree_density = tree_density
+		tree_system.terrain_generator = self  # Pass reference to self
+
+		# Add to scene
+		add_child(tree_system)
+		
+		# Update tree chunks only after system is initialized and terrain exists
+		var player_pos = Vector3.ZERO
+		if has_node("Player"):
+			player_pos = $Player.global_position
+		tree_system.update_tree_chunks(player_pos, view_distance, chunk_size)
+
+# Initialize astronomical system
+func initialize_astronomical_system():
+	if enable_astronomical_system:
+		# Create astronomical system node
+		astronomical_system = load("res://AstronomicalSystem.gd").new()
+		astronomical_system.name = "AstronomicalSystem"
+		astronomical_system.day_length = day_length
+		astronomical_system.start_time = start_time
+		
+		# Add to scene
+		add_child(astronomical_system)
+
 func initialize_water_system():
 	# Create water system node
 	water_system = load("res://WaterSystem.gd").new()
-	# Try using a direct instance instead of loading
-	# water_system = preload("res://WaterSystem.gd").new()
 	water_system.name = "WaterSystem"
 	water_system.water_level = water_level
 	water_system.water_chunk_size = chunk_size
@@ -144,19 +153,6 @@ func initialize_water_system():
 	if has_node("Player"):
 		player_pos = $Player.global_position
 	water_system.update_water_chunks(player_pos, view_distance, chunk_size)
-	
-	
-# Creates some demo water features
-func create_demo_water_features():
-	# Example: Create a river from high elevation to low
-	var start_pos = Vector3(0, 15, 0)
-	var end_pos = Vector3(100, water_level, 100)
-	water_system.create_river(start_pos, end_pos, 10.0)
-	
-	# Create a waterfall where the river drops off
-	var waterfall_pos = Vector3(50, 10, 50)
-	var waterfall_height = 15.0
-	water_system.create_waterfall(waterfall_pos, waterfall_height, 8.0)
 
 # Updates which terrain chunks are visible based on player position
 func update_terrain_chunks(player_pos: Vector3):
@@ -205,8 +201,8 @@ func generate_terrain_chunk(chunk_pos: Vector2):
 	
 	# Determine dominant biome for this chunk
 	var chunk_center = Vector2(
-		world_pos_x + chunk_size/2.0, 
-		world_pos_z + chunk_size/2.0
+		world_pos_x + chunk_size/2, 
+		world_pos_z + chunk_size/2
 	)
 	var dominant_biome = determine_biome(chunk_center)
 	
@@ -258,7 +254,7 @@ func generate_terrain_chunk(chunk_pos: Vector2):
 	# Add mesh to chunk
 	chunk_node.add_child(mesh_instance)
 	
-	# Add collision
+	# Add collision BEFORE placing trees
 	add_chunk_collision(chunk_node, mesh)
 	
 	# Apply biome-based texturing
@@ -266,10 +262,8 @@ func generate_terrain_chunk(chunk_pos: Vector2):
 	
 	# Store chunk in dictionary
 	loaded_chunks[chunk_pos] = chunk_node
-
-	if enable_trees and tree_system:
-		var chunk_biome = determine_biome(chunk_center)
-		tree_system.place_trees_in_chunk(chunk_node, chunk_pos, chunk_biome)
+	
+	# DO NOT place trees here anymore - we'll do that after all terrain chunks are loaded
 
 # Removes a chunk that's outside the view distance
 func remove_terrain_chunk(chunk_pos: Vector2):
@@ -382,9 +376,6 @@ func apply_biome_height_adjustments(base_height: float, biome_type: int, world_p
 				adjusted_height -= 10
 	
 	return adjusted_height
-
-
-
 
 # Apply biome-based texturing to a mesh instance
 func apply_biome_texturing(mesh_instance: MeshInstance3D, biome_type: int):
@@ -633,55 +624,3 @@ func add_player_to_scene():
 		camera = Camera3D.new()
 		camera.position = Vector3(0, 0.7, 0)
 		player.add_child(camera)
-		
-		
-		# Add to TerrainGenerator.gd
-func get_biome_blend_factors(world_position: Vector2) -> Dictionary:
-	# Get noise values
-	var biome_value = biome_noise.get_noise_2d(world_position.x * biome_scale, world_position.y * biome_scale)
-	var temp_noise = (world_position.y * 0.001) + biome_noise.get_noise_2d(world_position.x * biome_scale * 0.5, world_position.y * biome_scale * 0.5) * 0.5
-	var elevation_noise = noise.get_noise_2d(world_position.x * biome_scale * 2, world_position.y * biome_scale * 2)
-	var moisture_noise = biome_noise.get_noise_2d(world_position.x * biome_scale * 1.5, world_position.y * biome_scale * 1.5)
-	
-	# Initialize blend factors for each biome
-	var blend_factors = {
-		BiomeType.TEMPERATE_FOREST: 0.0,
-		BiomeType.DESERT: 0.0,
-		BiomeType.SNOWY_MOUNTAINS: 0.0,
-		BiomeType.TROPICAL_JUNGLE: 0.0,
-		BiomeType.VOLCANIC_WASTELAND: 0.0
-	}
-	
-	# Calculate blend factors based on noise values with smooth transitions
-	# Volcanic areas
-	var volcanic_factor = smoothstep(0.6, 0.8, biome_value) * smoothstep(0.3, 0.5, elevation_noise)
-	blend_factors[BiomeType.VOLCANIC_WASTELAND] = volcanic_factor
-	
-	# Snow mountains
-	var snow_factor = smoothstep(-0.4, -0.2, temp_noise) * smoothstep(0.1, 0.3, elevation_noise)
-	blend_factors[BiomeType.SNOWY_MOUNTAINS] = snow_factor * (1.0 - volcanic_factor)
-	
-	# Desert
-	var desert_factor = smoothstep(0.2, 0.4, temp_noise) * smoothstep(-0.3, -0.1, moisture_noise)
-	blend_factors[BiomeType.DESERT] = desert_factor * (1.0 - volcanic_factor) * (1.0 - snow_factor)
-	
-	# Tropical jungle
-	var jungle_factor = smoothstep(0.1, 0.3, temp_noise) * smoothstep(0.1, 0.3, moisture_noise)
-	blend_factors[BiomeType.TROPICAL_JUNGLE] = jungle_factor * (1.0 - volcanic_factor) * (1.0 - snow_factor) * (1.0 - desert_factor)
-	
-	# Temperate forest (default biome)
-	blend_factors[BiomeType.TEMPERATE_FOREST] = max(0.0, 1.0 - volcanic_factor - snow_factor - desert_factor - jungle_factor)
-	
-	# Normalize factors to ensure they sum to 1.0
-	var total = 0.0
-	for biome in blend_factors:
-		total += blend_factors[biome]
-	
-	if total > 0:
-		for biome in blend_factors:
-			blend_factors[biome] /= total
-	else:
-		# Fallback to temperate forest if all factors are zero
-		blend_factors[BiomeType.TEMPERATE_FOREST] = 1.0
-	
-	return blend_factors
