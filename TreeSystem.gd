@@ -501,9 +501,6 @@ func calculate_terrain_slope(world_x: float, world_z: float) -> float:
 
 
 
-
-
-# Create and place tree at specific position with specified type
 func create_tree_at_position(position: Vector3, tree_type: String, parent_node: Node3D):
 	if not tree_type in tree_prefabs:
 		push_error("Tree type '", tree_type, "' not found!")
@@ -520,6 +517,11 @@ func create_tree_at_position(position: Vector3, tree_type: String, parent_node: 
 	tree_node.rotation_degrees.y = randf_range(0, tree_rotation_variation)
 
 	# Set position
+	# Important: Check the actual terrain height at this exact position
+	var terrain_height = calculate_terrain_height(position.x, position.z)
+	position.y = terrain_height + terrain_interaction_margin
+
+	# Apply the corrected position
 	tree_node.position = position
 
 	# Add to parent
