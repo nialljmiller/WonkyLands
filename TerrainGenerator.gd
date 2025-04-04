@@ -201,8 +201,8 @@ func generate_terrain_chunk(chunk_pos: Vector2):
 	
 	# Determine dominant biome for this chunk
 	var chunk_center = Vector2(
-		world_pos_x + chunk_size/2, 
-		world_pos_z + chunk_size/2
+		world_pos_x + chunk_size/2.0, 
+		world_pos_z + chunk_size/2.0
 	)
 	var dominant_biome = determine_biome(chunk_center)
 	
