@@ -20,7 +20,7 @@ var water_system = null
 
 # Astronomical system settings
 @export var enable_astronomical_system: bool = true
-@export var day_length: float = 1200.0  # Seconds per full day cycle
+@export var day_length: float = 360000.0  # Seconds per full day cycle
 @export var start_time: float = 8.0  # Starting hour (24-hour format)
 var astronomical_system = null
 

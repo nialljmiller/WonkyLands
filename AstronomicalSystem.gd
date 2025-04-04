@@ -163,8 +163,9 @@ func initialize_sky_environment():
 	environment.fog_sky_affect = 0.5
 	
 	# Configure sky for night/day transition
-	environment.sky_rotation = Vector3(0, 0, deg_to_rad(90 - latitude))
-
+	#environment.sky_rotation = Vector3(0, 0, deg_to_rad(90 - latitude))
+	environment.sky_rotation = Vector3(0, 0, 0)  # Reset sky rotation to default
+	
 func create_sun():
 	# Create sun light
 	sun_light = DirectionalLight3D.new()
@@ -511,8 +512,7 @@ func update_sky_colors():
 	var sky_material = sky_environment.environment.sky.sky_material
 	
 	# Calculate day/night transition factor based on sun altitude
-	var day_night_factor = clamp((sin(sun_altitude) + 0.15) / 0.3, 0.0, 1.0)
-	
+	var day_night_factor = smoothstep(-0.1, 0.12, sin(sun_altitude))  # Smoother transition
 	# Sunset/sunrise factor (strongest when sun is near horizon)
 	var sunset_factor = 1.0 - abs(day_night_factor * 2.0 - 1.0)
 	sunset_factor *= sunset_factor  # Square for faster falloff
