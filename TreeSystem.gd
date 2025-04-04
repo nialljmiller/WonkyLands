@@ -516,11 +516,13 @@ func create_tree_at_position(position: Vector3, tree_type: String, parent_node: 
 	# Apply random rotation around Y axis
 	tree_node.rotation_degrees.y = randf_range(0, tree_rotation_variation)
 
-	# Set position
-	# Important: Check the actual terrain height at this exact position
+	# In TreeSystem.gd - create_tree_at_position function
+	# Replace the current position setting with:
 	var terrain_height = calculate_terrain_height(position.x, position.z)
-	position.y = terrain_height + terrain_interaction_margin
 
+	# Remove or reduce the terrain_interaction_margin
+	# Set to 0 or a very small value like 0.01
+	position.y = terrain_height + 0.01  # Just enough to avoid z-fighting
 	# Apply the corrected position
 	tree_node.position = position
 
@@ -576,3 +578,21 @@ func remove_trees_in_chunk(chunk_pos: Vector2):
 	
 	# Remove chunk from tracking
 	tree_positions.erase(chunk_pos)
+
+
+
+
+# Add this function to TreeSystem.gd
+func get_exact_ground_height(world_x: float, world_z: float) -> float:
+	var space_state = get_world_3d().direct_space_state
+	var from = Vector3(world_x, 1000, world_z)  # Start high above
+	var to = Vector3(world_x, -1000, world_z)   # End deep below
+
+	var query = PhysicsRayQueryParameters3D.create(from, to)
+	var result = space_state.intersect_ray(query)
+
+	if result:
+		return result.position.y
+	else:
+		# Fallback to noise-based height if raycast fails
+		return calculate_terrain_height(world_x, world_z)
