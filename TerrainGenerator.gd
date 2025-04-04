@@ -93,13 +93,13 @@ func _ready():
 		initialize_tree_system()
 
 	# Add player to scene
-	add_player_to_scene()
 	
 	# Generate initial chunks
 	var initial_position = Vector3.ZERO
 	if has_node("Player"):
 		initial_position = $Player.global_position
 	update_terrain_chunks(initial_position)
+	add_player_to_scene()
 
 # In the _process function, add updating of tree chunks
 func _process(delta):
@@ -205,8 +205,8 @@ func generate_terrain_chunk(chunk_pos: Vector2):
 	
 	# Determine dominant biome for this chunk
 	var chunk_center = Vector2(
-		world_pos_x + chunk_size/2, 
-		world_pos_z + chunk_size/2
+		world_pos_x + chunk_size/2.0, 
+		world_pos_z + chunk_size/2.0
 	)
 	var dominant_biome = determine_biome(chunk_center)
 	
@@ -382,6 +382,9 @@ func apply_biome_height_adjustments(base_height: float, biome_type: int, world_p
 				adjusted_height -= 10
 	
 	return adjusted_height
+
+
+
 
 # Apply biome-based texturing to a mesh instance
 func apply_biome_texturing(mesh_instance: MeshInstance3D, biome_type: int):
@@ -630,3 +633,55 @@ func add_player_to_scene():
 		camera = Camera3D.new()
 		camera.position = Vector3(0, 0.7, 0)
 		player.add_child(camera)
+		
+		
+		# Add to TerrainGenerator.gd
+func get_biome_blend_factors(world_position: Vector2) -> Dictionary:
+	# Get noise values
+	var biome_value = biome_noise.get_noise_2d(world_position.x * biome_scale, world_position.y * biome_scale)
+	var temp_noise = (world_position.y * 0.001) + biome_noise.get_noise_2d(world_position.x * biome_scale * 0.5, world_position.y * biome_scale * 0.5) * 0.5
+	var elevation_noise = noise.get_noise_2d(world_position.x * biome_scale * 2, world_position.y * biome_scale * 2)
+	var moisture_noise = biome_noise.get_noise_2d(world_position.x * biome_scale * 1.5, world_position.y * biome_scale * 1.5)
+	
+	# Initialize blend factors for each biome
+	var blend_factors = {
+		BiomeType.TEMPERATE_FOREST: 0.0,
+		BiomeType.DESERT: 0.0,
+		BiomeType.SNOWY_MOUNTAINS: 0.0,
+		BiomeType.TROPICAL_JUNGLE: 0.0,
+		BiomeType.VOLCANIC_WASTELAND: 0.0
+	}
+	
+	# Calculate blend factors based on noise values with smooth transitions
+	# Volcanic areas
+	var volcanic_factor = smoothstep(0.6, 0.8, biome_value) * smoothstep(0.3, 0.5, elevation_noise)
+	blend_factors[BiomeType.VOLCANIC_WASTELAND] = volcanic_factor
+	
+	# Snow mountains
+	var snow_factor = smoothstep(-0.4, -0.2, temp_noise) * smoothstep(0.1, 0.3, elevation_noise)
+	blend_factors[BiomeType.SNOWY_MOUNTAINS] = snow_factor * (1.0 - volcanic_factor)
+	
+	# Desert
+	var desert_factor = smoothstep(0.2, 0.4, temp_noise) * smoothstep(-0.3, -0.1, moisture_noise)
+	blend_factors[BiomeType.DESERT] = desert_factor * (1.0 - volcanic_factor) * (1.0 - snow_factor)
+	
+	# Tropical jungle
+	var jungle_factor = smoothstep(0.1, 0.3, temp_noise) * smoothstep(0.1, 0.3, moisture_noise)
+	blend_factors[BiomeType.TROPICAL_JUNGLE] = jungle_factor * (1.0 - volcanic_factor) * (1.0 - snow_factor) * (1.0 - desert_factor)
+	
+	# Temperate forest (default biome)
+	blend_factors[BiomeType.TEMPERATE_FOREST] = max(0.0, 1.0 - volcanic_factor - snow_factor - desert_factor - jungle_factor)
+	
+	# Normalize factors to ensure they sum to 1.0
+	var total = 0.0
+	for biome in blend_factors:
+		total += blend_factors[biome]
+	
+	if total > 0:
+		for biome in blend_factors:
+			blend_factors[biome] /= total
+	else:
+		# Fallback to temperate forest if all factors are zero
+		blend_factors[BiomeType.TEMPERATE_FOREST] = 1.0
+	
+	return blend_factors

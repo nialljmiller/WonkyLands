@@ -32,7 +32,8 @@ func _physics_process(delta):
 	# Apply camera rotation
 	var camera = get_node("Camera3D")
 	camera.rotation_degrees.x = clamp(camera.rotation_degrees.x + camera_rotation.y * look_sensitivity, -89, 89)
-	rotate_y(-camera_rotation.x * look_sensitivity * 0.01)
+	# Fixed: Changed negative to positive to correct horizontal mouse look
+	rotate_y(camera_rotation.x * look_sensitivity * 0.01)
 	
 	# Reset camera rotation
 	camera_rotation = Vector2()
@@ -115,7 +116,8 @@ func process_swimming(delta):
 
 func _input(event):
 	if event is InputEventMouseMotion:
-		camera_rotation = Vector2(-event.relative.x, -event.relative.y)
+		# Fixed: Changed signs to get correct mouse movement
+		camera_rotation = Vector2(event.relative.x, -event.relative.y)
 
 # Add water splash effect when entering water
 func _on_enter_water():

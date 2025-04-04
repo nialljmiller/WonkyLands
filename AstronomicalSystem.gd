@@ -218,6 +218,8 @@ func create_primary_moon():
 	moon_material.albedo_color = primary_moon_color
 	moon_material.roughness = 0.9
 	moon_material.billboard_mode = StandardMaterial3D.BILLBOARD_ENABLED
+	moon_material.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+	moon_material.no_depth_test = false
 	
 	var moon_sphere = SphereMesh.new()
 	moon_sphere.radius = primary_moon_size
@@ -249,6 +251,9 @@ func create_secondary_moon():
 	moon_material.albedo_color = secondary_moon_color
 	moon_material.roughness = 0.85
 	moon_material.billboard_mode = StandardMaterial3D.BILLBOARD_ENABLED
+	
+	moon_material.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+	moon_material.no_depth_test = false
 	
 	var moon_sphere = SphereMesh.new()
 	moon_sphere.radius = secondary_moon_size

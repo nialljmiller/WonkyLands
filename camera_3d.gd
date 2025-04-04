@@ -12,20 +12,20 @@ func _ready():
 func _process(delta):
 	# Apply rotation
 	rotation_degrees.x = clamp(rotation_degrees.x + rotation_velocity.y * look_sensitivity, -90, 90)
-	rotation_degrees.y += rotation_velocity.x * look_sensitivity
+	rotation_degrees.y += rotation_velocity.x * -look_sensitivity
 	
 	# Reset rotation velocity
 	rotation_velocity = Vector2()
 	
 	# Calculate movement direction
 	var direction = Vector3()
-	if Input.is_action_pressed("ui_up"):
+	if Input.is_action_pressed("ui_up") or Input.is_action_pressed("w_key"):
 		direction -= transform.basis.z
-	if Input.is_action_pressed("ui_down"):
+	if Input.is_action_pressed("ui_down") or Input.is_action_pressed("s_key"):
 		direction += transform.basis.z
-	if Input.is_action_pressed("ui_left"):
+	if Input.is_action_pressed("ui_left") or Input.is_action_pressed("a_key"):
 		direction -= transform.basis.x
-	if Input.is_action_pressed("ui_right"):
+	if Input.is_action_pressed("ui_right") or Input.is_action_pressed("d_key"):
 		direction += transform.basis.x
 	
 	# Apply movement
@@ -34,4 +34,5 @@ func _process(delta):
 
 func _input(event):
 	if event is InputEventMouseMotion:
-		rotation_velocity = Vector2(-event.relative.x, -event.relative.y)
+		# Fixed: Removed negative sign on X axis to correct horizontal mouse look
+		rotation_velocity = Vector2(event.relative.x, -event.relative.y)
