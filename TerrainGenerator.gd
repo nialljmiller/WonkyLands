@@ -18,6 +18,12 @@ extends Node3D
 @export var water_level: float = -5.0  # Global water level
 var water_system = null
 
+# Astronomical system settings
+@export var enable_astronomical_system: bool = true
+@export var day_length: float = 1200.0  # Seconds per full day cycle
+@export var start_time: float = 8.0  # Starting hour (24-hour format)
+var astronomical_system = null
+
 # Noise generation resource
 var noise = FastNoiseLite.new()
 var biome_noise = FastNoiseLite.new()  # For biome selection
@@ -37,6 +43,18 @@ func initialize_tree_system():
 		# Add to scene
 		add_child(tree_system)
 
+# Initialize astronomical system
+func initialize_astronomical_system():
+	if enable_astronomical_system:
+		# Create astronomical system node
+		astronomical_system = load("res://AstronomicalSystem.gd").new()
+		astronomical_system.name = "AstronomicalSystem"
+		astronomical_system.day_length = day_length
+		astronomical_system.start_time = start_time
+		
+		# Add to scene
+		add_child(astronomical_system)
+
 # Biome types
 enum BiomeType {
 	TEMPERATE_FOREST,
@@ -46,7 +64,7 @@ enum BiomeType {
 	VOLCANIC_WASTELAND
 }
 
-# Update the _ready() function to call initialize_tree_system()
+# Update the _ready() function to call initialize_astronomical_system()
 func _ready():
 	# Setup noise generator
 	noise.seed = randi()
@@ -58,11 +76,13 @@ func _ready():
 	biome_noise.fractal_octaves = 3
 	biome_noise.frequency = 0.01
 
-	# Add celestial elements
-	add_celestial_elements()
-
-	# Add sky environment
-	add_sky_environment()
+	# Initialize astronomical system (replacing add_celestial_elements and add_sky_environment)
+	if enable_astronomical_system:
+		initialize_astronomical_system()
+	else:
+		# Fallback to simple sky if astronomical system is disabled
+		add_sky_environment()
+		add_celestial_elements()
 	
 	# Initialize water system
 	if enable_water:
@@ -250,10 +270,6 @@ func generate_terrain_chunk(chunk_pos: Vector2):
 	if enable_trees and tree_system:
 		var chunk_biome = determine_biome(chunk_center)
 		tree_system.place_trees_in_chunk(chunk_node, chunk_pos, chunk_biome)
-		
-
-
-
 
 # Removes a chunk that's outside the view distance
 func remove_terrain_chunk(chunk_pos: Vector2):

@@ -570,8 +570,8 @@ func update_star_visibility(night_factor: float):
 		var material = star.material_override
 		
 		# Get original emission energy
-		var base_energy = material.emission_energy
-		
+		#var base_energy = material.emission_energy
+		var base_energy = material.emission_energy_multiplier
 		# Calculate visibility factor based on celestial position
 		var position_factor = 1.0
 		
