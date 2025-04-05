@@ -23,6 +23,9 @@ var rivers = []
 # Fish
 var fish_scenes = []
 var active_fish = []
+# Add these variables to your WaterSystem class
+var fish_by_biome = {}
+var fish_by_depth = {}
 
 func _ready():
 	# Setup water shader
@@ -30,31 +33,6 @@ func _ready():
 	
 	# Initialize fish scenes
 	load_fish_scenes()
-
-# Load fish scene files
-func load_fish_scenes():
-	print("Loading fish scenes...")
-	
-	# First, create the fish scene file if it doesn't exist already
-	ensure_fish_scene_exists()
-	
-	# Try to load the fish scene
-	var fish_scene_path = "res://Fish1.tscn"
-	var fish1 = load(fish_scene_path)
-	
-	if fish1:
-		fish_scenes.append(fish1)
-		print("Fish1 loaded successfully")
-	else:
-		print("Failed to load Fish1.tscn - trying alternative approach")
-		
-		# Try using ResourceLoader instead
-		var fish1_packed = ResourceLoader.load(fish_scene_path, "", ResourceLoader.CACHE_MODE_REPLACE)
-		if fish1_packed:
-			fish_scenes.append(fish1_packed)
-			print("Fish1 loaded successfully with ResourceLoader")
-		else:
-			print("All attempts to load Fish1.tscn failed")
 
 # Make sure the fish scene exists as a proper scene file
 func ensure_fish_scene_exists():
@@ -293,8 +271,120 @@ func create_river_mesh(path: Array, width: float) -> MeshInstance3D:
 	return river_instance
 	
 	
+
+# Update this function in WaterSystem.gd
+func load_fish_scenes():
+	print("Loading fish scenes...")
 	
-# Spawns a fish of random type at position
+	# Clear previous fish scenes
+	fish_scenes.clear()
+	
+	# List of all fish types to look for
+	var all_fish_types = [
+		"Fish1.tscn",
+		"BlueFish.tscn", 
+		"RedFish.tscn", 
+		"GoldFish.tscn", 
+		"GreenFish.tscn",
+		"PurpleFish.tscn", 
+		"BlackFish.tscn", 
+		"StripedFish.tscn",
+		"JumpingFish.tscn",
+		"DeepSeaFish.tscn"
+	]
+	
+	# Try to load each fish type
+	for fish_file in all_fish_types:
+		var full_path = "res://" + fish_file
+		if FileAccess.file_exists(full_path):
+			var fish_resource = load(full_path)
+			if fish_resource:
+				fish_scenes.append(fish_resource)
+				print(fish_file + " loaded successfully")
+			else:
+				print("Failed to load " + fish_file)
+	
+	# If no fish were loaded, create a default
+	if fish_scenes.size() == 0:
+		ensure_fish_scene_exists()
+		var fish1 = load("res://Fish1.tscn")
+		if fish1:
+			fish_scenes.append(fish1)
+			print("Default Fish1 loaded as fallback")
+	
+	# Set up biome-specific fish types
+	setup_biome_fish()
+	
+	# Set up depth-specific fish types
+	setup_depth_fish()
+
+# Add this function to set up which fish appear in which biomes
+func setup_biome_fish():
+	# Reset biome fish mappings
+	fish_by_biome.clear()
+	
+	# Temperate forest waters
+	fish_by_biome["TEMPERATE_FOREST"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "BlueFish.tscn" or name == "GreenFish.tscn" or name == "Fish1.tscn" or name == "JumpingFish.tscn":
+			fish_by_biome["TEMPERATE_FOREST"].append(fish)
+	
+	# Desert waters
+	fish_by_biome["DESERT"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "RedFish.tscn" or name == "GoldFish.tscn" or name == "BlackFish.tscn":
+			fish_by_biome["DESERT"].append(fish)
+	
+	# Snowy mountains waters
+	fish_by_biome["SNOWY_MOUNTAINS"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "BlueFish.tscn" or name == "Fish1.tscn":
+			fish_by_biome["SNOWY_MOUNTAINS"].append(fish)
+	
+	# Tropical jungle waters
+	fish_by_biome["TROPICAL_JUNGLE"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "StripedFish.tscn" or name == "RedFish.tscn" or name == "GreenFish.tscn" or name == "JumpingFish.tscn":
+			fish_by_biome["TROPICAL_JUNGLE"].append(fish)
+	
+	# Volcanic wasteland waters
+	fish_by_biome["VOLCANIC_WASTELAND"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "BlackFish.tscn" or name == "RedFish.tscn" or name == "DeepSeaFish.tscn":
+			fish_by_biome["VOLCANIC_WASTELAND"].append(fish)
+
+# Add this function to set up which fish appear at which depths
+func setup_depth_fish():
+	# Reset depth fish mappings
+	fish_by_depth.clear()
+	
+	# Surface fish (0-5 units below water)
+	fish_by_depth["surface"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "JumpingFish.tscn" or name == "BlueFish.tscn" or name == "Fish1.tscn":
+			fish_by_depth["surface"].append(fish)
+	
+	# Mid-depth fish (5-15 units below water)
+	fish_by_depth["mid"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "StripedFish.tscn" or name == "RedFish.tscn" or name == "GreenFish.tscn" or name == "GoldFish.tscn":
+			fish_by_depth["mid"].append(fish)
+	
+	# Deep fish (15+ units below water)
+	fish_by_depth["deep"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "DeepSeaFish.tscn" or name == "BlackFish.tscn":
+			fish_by_depth["deep"].append(fish)
+
+# Update spawn_fish function to consider biome and depth
 func spawn_fish(pos: Vector3, count: int = 1):
 	if fish_scenes.size() == 0:
 		print("ERROR: No fish scenes available to spawn fish")
@@ -309,10 +399,41 @@ func spawn_fish(pos: Vector3, count: int = 1):
 		fish_parent.name = "FishParent"
 		add_child(fish_parent)
 	
+	# Determine biome at this position
+	var biome_type = 0  # Default to TEMPERATE_FOREST
+	var biome_name = "TEMPERATE_FOREST"
+	
+	var terrain_generator = get_node_or_null("/root/TerrainGenerator")
+	if terrain_generator and terrain_generator.has_method("determine_biome"):
+		var pos2d = Vector2(pos.x, pos.z)
+		biome_type = terrain_generator.determine_biome(pos2d)
+		
+		if terrain_generator.has_method("biome_type_to_string"):
+			biome_name = terrain_generator.biome_type_to_string(biome_type)
+	
+	# Get appropriate fish for this biome
+	var biome_appropriate_fish = fish_scenes  # Default to all fish
+	if fish_by_biome.has(biome_name) and fish_by_biome[biome_name].size() > 0:
+		biome_appropriate_fish = fish_by_biome[biome_name]
+	
 	# Spawn the requested number of fish
 	for i in range(count):
-		# Choose a random fish type
-		var fish_scene = fish_scenes[randi() % fish_scenes.size()]
+		# Choose fish type based on depth
+		var depth = water_level - pos.y
+		var fish_scene = null
+		
+		if depth < 5.0 and fish_by_depth["surface"].size() > 0 and randf() < 0.7:
+			# 70% chance for surface fish in shallow water
+			fish_scene = fish_by_depth["surface"][randi() % fish_by_depth["surface"].size()]
+		elif depth > 15.0 and fish_by_depth["deep"].size() > 0 and randf() < 0.8:
+			# 80% chance for deep fish in deep water
+			fish_scene = fish_by_depth["deep"][randi() % fish_by_depth["deep"].size()]
+		else:
+			# Mid-depth or random selection from biome fish
+			if fish_by_depth["mid"].size() > 0 and randf() < 0.6:
+				fish_scene = fish_by_depth["mid"][randi() % fish_by_depth["mid"].size()]
+			else:
+				fish_scene = biome_appropriate_fish[randi() % biome_appropriate_fish.size()]
 		
 		# Instance the fish
 		var fish_instance = fish_scene.instantiate()
@@ -330,14 +451,17 @@ func spawn_fish(pos: Vector3, count: int = 1):
 		# Set position (make sure it's below water level)
 		var fish_pos = pos + random_offset
 		fish_pos.y = min(fish_pos.y, water_level - 1.0)  # Keep at least 1 unit below water
+		
+		# Adjust depth for deep sea fish
+		if "DeepSea" in fish_scene.resource_path:
+			fish_pos.y = min(fish_pos.y, water_level - 15.0)  # Keep deep sea fish deep
+		
 		fish_instance.position = fish_pos
 		
 		# Add to scene
 		fish_parent.add_child(fish_instance)
 		active_fish.append(fish_instance)
 		
-		print("Fish spawned at: " + str(fish_pos))
-
 # Updates fish positions based on water flow
 func update_fish(delta):
 	var fish_to_remove = []
