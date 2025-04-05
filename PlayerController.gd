@@ -117,7 +117,7 @@ func process_swimming(delta):
 func _input(event):
 	if event is InputEventMouseMotion:
 		# Fixed: Changed signs to get correct mouse movement
-		camera_rotation = Vector2(event.relative.x, -event.relative.y)
+		camera_rotation = Vector2(-event.relative.x, -event.relative.y)
 
 # Add water splash effect when entering water
 func _on_enter_water():
