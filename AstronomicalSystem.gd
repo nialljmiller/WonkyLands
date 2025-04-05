@@ -15,7 +15,7 @@ class_name AstronomicalSystem
 @export var latitude: float = 45.0  # Observer latitude in degrees
 
 # Sun properties
-@export var sun_size: float = 30.0  # Visual size of the sun
+@export var sun_size: float = 3000.0  # Visual size of the sun
 @export var sun_intensity_day: float = 1.5  # Max light intensity
 @export var sun_intensity_night: float = 0.0  # Min light intensity
 @export var sun_color_day: Color = Color(1.0, 0.98, 0.92)  # Daylight color
@@ -48,7 +48,7 @@ class_name AstronomicalSystem
 @export var galactic_center_direction: Vector2 = Vector2(45, 15)  # Az/Alt of galactic center in degrees
 
 # Internal variables
-var current_time: float = 0.0  # Current time in hours (0-24)
+var current_time: float = 23.0  # Current time in hours (0-24)
 var day_phase: float = 0.0  # 0-1 representing daylight cycle
 var year_phase: float = 0.0  # 0-1 representing yearly cycle
 var sun_altitude: float = 0.0  # Current sun altitude angle
