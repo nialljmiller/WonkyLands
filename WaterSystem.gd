@@ -27,9 +27,15 @@ var active_fish = []
 var fish_by_biome = {}
 var fish_by_depth = {}
 
+
+
+# Override the _ready function to create all fish scenes before loading them
 func _ready():
-	# Setup water shader
+	# Initialize other water system components
 	print("Water system initialized")
+	
+	# Create all fish scenes before loading them
+	create_all_fish_scenes()
 	
 	# Initialize fish scenes
 	load_fish_scenes()
@@ -535,6 +541,164 @@ func ensure_minimum_fish_population():
 			var spawn_pos = closest_chunk.position
 			spawn_pos.y = water_level - 2.0  # 2 units below water surface
 			spawn_fish(spawn_pos, spawn_count)
+	
+	
+
+# Add a new function to create all necessary fish scene files
+func create_all_fish_scenes():
+	print("Creating all fish scene files...")
+	
+	# Dictionary of fish scenes to create - maps file name to settings
+	var fish_scenes_to_create = {
+		"BlueFish.tscn": {
+			"script": "res://BlueFish.gd",
+			"color": Color(0.3, 0.6, 0.9),
+			"size": Vector3(0.4, 0.15, 0.08),
+			"speed": 1.2
+		},
+		"RedFish.tscn": {
+			"script": "res://redfish.gd",
+			"color": Color(0.9, 0.2, 0.2),
+			"size": Vector3(0.4, 0.15, 0.08),
+			"speed": 1.2
+		},
+		"GoldFish.tscn": {
+			"script": "res://Fish.gd",  # Using base Fish script with modified properties
+			"color": Color(0.9, 0.7, 0.2),
+			"size": Vector3(0.35, 0.14, 0.07),
+			"speed": 1.1
+		},
+		"GreenFish.tscn": {
+			"script": "res://Fish.gd",  # Using base Fish script with modified properties
+			"color": Color(0.2, 0.7, 0.3),
+			"size": Vector3(0.5, 0.2, 0.1),
+			"speed": 0.9
+		},
+		"BlackFish.tscn": {
+			"script": "res://Fish.gd",  # Using base Fish script with modified properties
+			"color": Color(0.1, 0.1, 0.15),
+			"size": Vector3(0.6, 0.25, 0.12),
+			"speed": 0.8
+		},
+		"PurpleFish.tscn": {
+			"script": "res://Fish.gd",  # Using base Fish script with modified properties
+			"color": Color(0.6, 0.3, 0.8),
+			"size": Vector3(0.45, 0.17, 0.09),
+			"speed": 1.3
+		}
+	}
+	
+	# Special fish with unique scripts
+	var special_fish_scenes = {
+		"JumpingFish.tscn": {
+			"script": "res://JumpingFish.gd",
+			"properties": {
+				"jump_interval_min": 5.0,
+				"jump_interval_max": 20.0,
+				"jump_height": 3.0,
+				"jump_distance": 2.0
+			}
+		},
+		"StripedFish.tscn": {
+			"script": "res://StripedFish.gd",
+			"properties": {}
+		},
+		"DeepSeaFish.tscn": {
+			"script": "res://DeepSeaFish.gd",
+			"properties": {
+				"min_depth": 10.0,
+				"preferred_depth": 20.0,
+				"has_lure": true
+			}
+		}
+	}
+	
+	# Create regular fish scenes
+	for scene_name in fish_scenes_to_create:
+		if FileAccess.file_exists("res://" + scene_name):
+			print(scene_name + " already exists")
+			continue
+		
+		var settings = fish_scenes_to_create[scene_name]
+		var template_content = """[gd_scene load_steps=2 format=3 uid="uid://PLACEHOLDER_UID"]
+
+[ext_resource type="Script" path="%s" id="1_fish"]
+
+[node name="%s" type="CharacterBody3D"]
+script = ExtResource("1_fish")
+fish_color = Color(%f, %f, %f, 1)
+fish_size = Vector3(%f, %f, %f)
+swim_speed = %f
+""" % [
+			settings["script"],
+			scene_name.get_basename(),
+			settings["color"].r, settings["color"].g, settings["color"].b,
+			settings["size"].x, settings["size"].y, settings["size"].z,
+			settings["speed"]
+		]
+		
+		# Save the content to the scene file
+		var file = FileAccess.open("res://" + scene_name, FileAccess.WRITE)
+		if file:
+			file.store_string(template_content)
+			file.close()
+			print("Created " + scene_name + " successfully")
+		else:
+			push_error("Failed to create " + scene_name + " file")
+	
+	# Create special fish scenes
+	for scene_name in special_fish_scenes:
+		if FileAccess.file_exists("res://" + scene_name):
+			print(scene_name + " already exists")
+			continue
+		
+		var settings = special_fish_scenes[scene_name]
+		
+		# Build properties string
+		var properties_str = ""
+		for prop in settings["properties"]:
+			var value = settings["properties"][prop]
+			if typeof(value) == TYPE_FLOAT:
+				properties_str += "%s = %f\n" % [prop, value]
+			elif typeof(value) == TYPE_BOOL:
+				properties_str += "%s = %s\n" % [prop, str(value).to_lower()]
+			else:
+				properties_str += "%s = %s\n" % [prop, str(value)]
+		
+		var template_content = """[gd_scene load_steps=2 format=3 uid="uid://PLACEHOLDER_UID"]
+
+[ext_resource type="Script" path="%s" id="1_fish"]
+
+[node name="%s" type="CharacterBody3D"]
+script = ExtResource("1_fish")
+%s
+""" % [
+			settings["script"],
+			scene_name.get_basename(),
+			properties_str
+		]
+		
+		# Save the content to the scene file
+		var file = FileAccess.open("res://" + scene_name, FileAccess.WRITE)
+		if file:
+			file.store_string(template_content)
+			file.close()
+			print("Created " + scene_name + " successfully")
+		else:
+			push_error("Failed to create " + scene_name + " file")
+
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
 			
 # Create a waterfall at the specified position with height and width
 func create_waterfall(position: Vector3, height: float, width: float = 5.0):
@@ -555,3 +719,8 @@ func _on_body_exited_water(body):
 func apply_water_physics(player, in_water: bool):
 	# Water physics implementation remains unchanged...
 	pass
+	
+	
+	
+	
+	

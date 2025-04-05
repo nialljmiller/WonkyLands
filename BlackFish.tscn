@@ -1,0 +1,9 @@
+[gd_scene load_steps=2 format=3 uid="uid://PLACEHOLDER_UID"]
+
+[ext_resource type="Script" path="res://Fish.gd" id="1_fish"]
+
+[node name="BlackFish" type="CharacterBody3D"]
+script = ExtResource("1_fish")
+fish_color = Color(0.100000, 0.100000, 0.150000, 1)
+fish_size = Vector3(0.600000, 0.250000, 0.120000)
+swim_speed = 0.800000

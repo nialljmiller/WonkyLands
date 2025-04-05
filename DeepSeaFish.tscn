@@ -1,0 +1,10 @@
+[gd_scene load_steps=2 format=3 uid="uid://PLACEHOLDER_UID"]
+
+[ext_resource type="Script" path="res://DeepSeaFish.gd" id="1_fish"]
+
+[node name="DeepSeaFish" type="CharacterBody3D"]
+script = ExtResource("1_fish")
+min_depth = 10.000000
+preferred_depth = 20.000000
+has_lure = true
+

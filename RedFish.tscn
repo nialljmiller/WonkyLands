@@ -1,0 +1,9 @@
+[gd_scene load_steps=2 format=3 uid="uid://PLACEHOLDER_UID"]
+
+[ext_resource type="Script" path="res://redfish.gd" id="1_fish"]
+
+[node name="RedFish" type="CharacterBody3D"]
+script = ExtResource("1_fish")
+fish_color = Color(0.900000, 0.200000, 0.200000, 1)
+fish_size = Vector3(0.400000, 0.150000, 0.080000)
+swim_speed = 1.200000
