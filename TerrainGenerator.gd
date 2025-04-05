@@ -2,7 +2,7 @@ extends Node3D
 
 # Terrain generation parameters
 @export var chunk_size: int = 128  # Size of each chunk
-@export var view_distance: int = 2  # How many chunks to render around player
+@export var view_distance: int = 1  # How many chunks to render around player
 @export var noise_scale: float = 0.05
 @export var amplitude: float = 50.0
 

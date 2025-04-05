@@ -1,0 +1,31 @@
+[gd_scene load_steps=2 format=3 uid="uid://PLACEHOLDER_UID"]
+
+[ext_resource type="Script" path="res://JumpingFish.gd" id="1_fish"]
+
+[node name="JumpingFish" type="CharacterBody3D"]
+script = ExtResource("1_fish")
+jump_interval_min = 5.0
+jump_interval_max = 20.0
+jump_height = 3.0
+jump_distance = 2.0
+
+
+# StripedFish.tscn
+[gd_scene load_steps=2 format=3 uid="uid://PLACEHOLDER_UID2"]
+
+[ext_resource type="Script" path="res://StripedFish.gd" id="1_striped"]
+
+[node name="StripedFish" type="CharacterBody3D"]
+script = ExtResource("1_striped")
+
+
+# DeepSeaFish.tscn
+[gd_scene load_steps=2 format=3 uid="uid://PLACEHOLDER_UID3"]
+
+[ext_resource type="Script" path="res://DeepSeaFish.gd" id="1_deepsea"]
+
+[node name="DeepSeaFish" type="CharacterBody3D"]
+script = ExtResource("1_deepsea")
+min_depth = 10.0
+preferred_depth = 20.0
+has_lure = true

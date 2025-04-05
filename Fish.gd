@@ -61,6 +61,42 @@ func _ready():
 	# Find water system node
 	water_system = get_node_or_null("/root/TerrainGenerator/WaterSystem")
 
+	# Find water system node (improved method that tries multiple paths)
+	water_system = get_node_or_null("/root/TerrainGenerator/WaterSystem")
+	
+	if not water_system:
+		# Try alternative paths
+		var terrain_gen = get_node_or_null("/root/TerrainGenerator")
+		if terrain_gen:
+			water_system = terrain_gen.get_node_or_null("WaterSystem")
+		
+		if not water_system:
+			# Search the entire scene tree
+			water_system = find_water_system_in_tree(get_tree().root)
+			
+	if not water_system:
+		print("WARNING: Fish could not find WaterSystem node")
+
+
+# Recursively search for WaterSystem in the scene tree
+func find_water_system_in_tree(node):
+	if node.name == "WaterSystem":
+		return node
+		
+	for child in node.get_children():
+		var result = find_water_system_in_tree(child)
+		if result:
+			return result
+			
+	return null
+
+
+
+
+
+
+
+
 func _physics_process(delta):
 	# Reduce timer for changing target
 	time_until_new_target -= delta

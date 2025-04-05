@@ -23,38 +23,22 @@ var rivers = []
 # Fish
 var fish_scenes = []
 var active_fish = []
+# Add these variables to your WaterSystem class
+var fish_by_biome = {}
+var fish_by_depth = {}
 
+
+
+# Override the _ready function to create all fish scenes before loading them
 func _ready():
-	# Setup water shader
+	# Initialize other water system components
 	print("Water system initialized")
+	
+	# Create all fish scenes before loading them
+	create_all_fish_scenes()
 	
 	# Initialize fish scenes
 	load_fish_scenes()
-
-# Load fish scene files
-func load_fish_scenes():
-	print("Loading fish scenes...")
-	
-	# First, create the fish scene file if it doesn't exist already
-	ensure_fish_scene_exists()
-	
-	# Try to load the fish scene
-	var fish_scene_path = "res://Fish1.tscn"
-	var fish1 = load(fish_scene_path)
-	
-	if fish1:
-		fish_scenes.append(fish1)
-		print("Fish1 loaded successfully")
-	else:
-		print("Failed to load Fish1.tscn - trying alternative approach")
-		
-		# Try using ResourceLoader instead
-		var fish1_packed = ResourceLoader.load(fish_scene_path, "", ResourceLoader.CACHE_MODE_REPLACE)
-		if fish1_packed:
-			fish_scenes.append(fish1_packed)
-			print("Fish1 loaded successfully with ResourceLoader")
-		else:
-			print("All attempts to load Fish1.tscn failed")
 
 # Make sure the fish scene exists as a proper scene file
 func ensure_fish_scene_exists():
@@ -293,8 +277,120 @@ func create_river_mesh(path: Array, width: float) -> MeshInstance3D:
 	return river_instance
 	
 	
+
+# Update this function in WaterSystem.gd
+func load_fish_scenes():
+	print("Loading fish scenes...")
 	
-# Spawns a fish of random type at position
+	# Clear previous fish scenes
+	fish_scenes.clear()
+	
+	# List of all fish types to look for
+	var all_fish_types = [
+		"Fish1.tscn",
+		"BlueFish.tscn", 
+		"RedFish.tscn", 
+		"GoldFish.tscn", 
+		"GreenFish.tscn",
+		"PurpleFish.tscn", 
+		"BlackFish.tscn", 
+		"StripedFish.tscn",
+		"JumpingFish.tscn",
+		"DeepSeaFish.tscn"
+	]
+	
+	# Try to load each fish type
+	for fish_file in all_fish_types:
+		var full_path = "res://" + fish_file
+		if FileAccess.file_exists(full_path):
+			var fish_resource = load(full_path)
+			if fish_resource:
+				fish_scenes.append(fish_resource)
+				print(fish_file + " loaded successfully")
+			else:
+				print("Failed to load " + fish_file)
+	
+	# If no fish were loaded, create a default
+	if fish_scenes.size() == 0:
+		ensure_fish_scene_exists()
+		var fish1 = load("res://Fish1.tscn")
+		if fish1:
+			fish_scenes.append(fish1)
+			print("Default Fish1 loaded as fallback")
+	
+	# Set up biome-specific fish types
+	setup_biome_fish()
+	
+	# Set up depth-specific fish types
+	setup_depth_fish()
+
+# Add this function to set up which fish appear in which biomes
+func setup_biome_fish():
+	# Reset biome fish mappings
+	fish_by_biome.clear()
+	
+	# Temperate forest waters
+	fish_by_biome["TEMPERATE_FOREST"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "BlueFish.tscn" or name == "GreenFish.tscn" or name == "Fish1.tscn" or name == "JumpingFish.tscn":
+			fish_by_biome["TEMPERATE_FOREST"].append(fish)
+	
+	# Desert waters
+	fish_by_biome["DESERT"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "RedFish.tscn" or name == "GoldFish.tscn" or name == "BlackFish.tscn":
+			fish_by_biome["DESERT"].append(fish)
+	
+	# Snowy mountains waters
+	fish_by_biome["SNOWY_MOUNTAINS"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "BlueFish.tscn" or name == "Fish1.tscn":
+			fish_by_biome["SNOWY_MOUNTAINS"].append(fish)
+	
+	# Tropical jungle waters
+	fish_by_biome["TROPICAL_JUNGLE"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "StripedFish.tscn" or name == "RedFish.tscn" or name == "GreenFish.tscn" or name == "JumpingFish.tscn":
+			fish_by_biome["TROPICAL_JUNGLE"].append(fish)
+	
+	# Volcanic wasteland waters
+	fish_by_biome["VOLCANIC_WASTELAND"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "BlackFish.tscn" or name == "RedFish.tscn" or name == "DeepSeaFish.tscn":
+			fish_by_biome["VOLCANIC_WASTELAND"].append(fish)
+
+# Add this function to set up which fish appear at which depths
+func setup_depth_fish():
+	# Reset depth fish mappings
+	fish_by_depth.clear()
+	
+	# Surface fish (0-5 units below water)
+	fish_by_depth["surface"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "JumpingFish.tscn" or name == "BlueFish.tscn" or name == "Fish1.tscn":
+			fish_by_depth["surface"].append(fish)
+	
+	# Mid-depth fish (5-15 units below water)
+	fish_by_depth["mid"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "StripedFish.tscn" or name == "RedFish.tscn" or name == "GreenFish.tscn" or name == "GoldFish.tscn":
+			fish_by_depth["mid"].append(fish)
+	
+	# Deep fish (15+ units below water)
+	fish_by_depth["deep"] = []
+	for fish in fish_scenes:
+		var name = fish.resource_path.get_file()
+		if name == "DeepSeaFish.tscn" or name == "BlackFish.tscn":
+			fish_by_depth["deep"].append(fish)
+
+# Update spawn_fish function to consider biome and depth
 func spawn_fish(pos: Vector3, count: int = 1):
 	if fish_scenes.size() == 0:
 		print("ERROR: No fish scenes available to spawn fish")
@@ -309,10 +405,41 @@ func spawn_fish(pos: Vector3, count: int = 1):
 		fish_parent.name = "FishParent"
 		add_child(fish_parent)
 	
+	# Determine biome at this position
+	var biome_type = 0  # Default to TEMPERATE_FOREST
+	var biome_name = "TEMPERATE_FOREST"
+	
+	var terrain_generator = get_node_or_null("/root/TerrainGenerator")
+	if terrain_generator and terrain_generator.has_method("determine_biome"):
+		var pos2d = Vector2(pos.x, pos.z)
+		biome_type = terrain_generator.determine_biome(pos2d)
+		
+		if terrain_generator.has_method("biome_type_to_string"):
+			biome_name = terrain_generator.biome_type_to_string(biome_type)
+	
+	# Get appropriate fish for this biome
+	var biome_appropriate_fish = fish_scenes  # Default to all fish
+	if fish_by_biome.has(biome_name) and fish_by_biome[biome_name].size() > 0:
+		biome_appropriate_fish = fish_by_biome[biome_name]
+	
 	# Spawn the requested number of fish
 	for i in range(count):
-		# Choose a random fish type
-		var fish_scene = fish_scenes[randi() % fish_scenes.size()]
+		# Choose fish type based on depth
+		var depth = water_level - pos.y
+		var fish_scene = null
+		
+		if depth < 5.0 and fish_by_depth["surface"].size() > 0 and randf() < 0.7:
+			# 70% chance for surface fish in shallow water
+			fish_scene = fish_by_depth["surface"][randi() % fish_by_depth["surface"].size()]
+		elif depth > 15.0 and fish_by_depth["deep"].size() > 0 and randf() < 0.8:
+			# 80% chance for deep fish in deep water
+			fish_scene = fish_by_depth["deep"][randi() % fish_by_depth["deep"].size()]
+		else:
+			# Mid-depth or random selection from biome fish
+			if fish_by_depth["mid"].size() > 0 and randf() < 0.6:
+				fish_scene = fish_by_depth["mid"][randi() % fish_by_depth["mid"].size()]
+			else:
+				fish_scene = biome_appropriate_fish[randi() % biome_appropriate_fish.size()]
 		
 		# Instance the fish
 		var fish_instance = fish_scene.instantiate()
@@ -330,14 +457,17 @@ func spawn_fish(pos: Vector3, count: int = 1):
 		# Set position (make sure it's below water level)
 		var fish_pos = pos + random_offset
 		fish_pos.y = min(fish_pos.y, water_level - 1.0)  # Keep at least 1 unit below water
+		
+		# Adjust depth for deep sea fish
+		if "DeepSea" in fish_scene.resource_path:
+			fish_pos.y = min(fish_pos.y, water_level - 15.0)  # Keep deep sea fish deep
+		
 		fish_instance.position = fish_pos
 		
 		# Add to scene
 		fish_parent.add_child(fish_instance)
 		active_fish.append(fish_instance)
 		
-		print("Fish spawned at: " + str(fish_pos))
-
 # Updates fish positions based on water flow
 func update_fish(delta):
 	var fish_to_remove = []
@@ -411,6 +541,164 @@ func ensure_minimum_fish_population():
 			var spawn_pos = closest_chunk.position
 			spawn_pos.y = water_level - 2.0  # 2 units below water surface
 			spawn_fish(spawn_pos, spawn_count)
+	
+	
+
+# Add a new function to create all necessary fish scene files
+func create_all_fish_scenes():
+	print("Creating all fish scene files...")
+	
+	# Dictionary of fish scenes to create - maps file name to settings
+	var fish_scenes_to_create = {
+		"BlueFish.tscn": {
+			"script": "res://BlueFish.gd",
+			"color": Color(0.3, 0.6, 0.9),
+			"size": Vector3(0.4, 0.15, 0.08),
+			"speed": 1.2
+		},
+		"RedFish.tscn": {
+			"script": "res://redfish.gd",
+			"color": Color(0.9, 0.2, 0.2),
+			"size": Vector3(0.4, 0.15, 0.08),
+			"speed": 1.2
+		},
+		"GoldFish.tscn": {
+			"script": "res://Fish.gd",  # Using base Fish script with modified properties
+			"color": Color(0.9, 0.7, 0.2),
+			"size": Vector3(0.35, 0.14, 0.07),
+			"speed": 1.1
+		},
+		"GreenFish.tscn": {
+			"script": "res://Fish.gd",  # Using base Fish script with modified properties
+			"color": Color(0.2, 0.7, 0.3),
+			"size": Vector3(0.5, 0.2, 0.1),
+			"speed": 0.9
+		},
+		"BlackFish.tscn": {
+			"script": "res://Fish.gd",  # Using base Fish script with modified properties
+			"color": Color(0.1, 0.1, 0.15),
+			"size": Vector3(0.6, 0.25, 0.12),
+			"speed": 0.8
+		},
+		"PurpleFish.tscn": {
+			"script": "res://Fish.gd",  # Using base Fish script with modified properties
+			"color": Color(0.6, 0.3, 0.8),
+			"size": Vector3(0.45, 0.17, 0.09),
+			"speed": 1.3
+		}
+	}
+	
+	# Special fish with unique scripts
+	var special_fish_scenes = {
+		"JumpingFish.tscn": {
+			"script": "res://JumpingFish.gd",
+			"properties": {
+				"jump_interval_min": 5.0,
+				"jump_interval_max": 20.0,
+				"jump_height": 3.0,
+				"jump_distance": 2.0
+			}
+		},
+		"StripedFish.tscn": {
+			"script": "res://StripedFish.gd",
+			"properties": {}
+		},
+		"DeepSeaFish.tscn": {
+			"script": "res://DeepSeaFish.gd",
+			"properties": {
+				"min_depth": 10.0,
+				"preferred_depth": 20.0,
+				"has_lure": true
+			}
+		}
+	}
+	
+	# Create regular fish scenes
+	for scene_name in fish_scenes_to_create:
+		if FileAccess.file_exists("res://" + scene_name):
+			print(scene_name + " already exists")
+			continue
+		
+		var settings = fish_scenes_to_create[scene_name]
+		var template_content = """[gd_scene load_steps=2 format=3 uid="uid://PLACEHOLDER_UID"]
+
+[ext_resource type="Script" path="%s" id="1_fish"]
+
+[node name="%s" type="CharacterBody3D"]
+script = ExtResource("1_fish")
+fish_color = Color(%f, %f, %f, 1)
+fish_size = Vector3(%f, %f, %f)
+swim_speed = %f
+""" % [
+			settings["script"],
+			scene_name.get_basename(),
+			settings["color"].r, settings["color"].g, settings["color"].b,
+			settings["size"].x, settings["size"].y, settings["size"].z,
+			settings["speed"]
+		]
+		
+		# Save the content to the scene file
+		var file = FileAccess.open("res://" + scene_name, FileAccess.WRITE)
+		if file:
+			file.store_string(template_content)
+			file.close()
+			print("Created " + scene_name + " successfully")
+		else:
+			push_error("Failed to create " + scene_name + " file")
+	
+	# Create special fish scenes
+	for scene_name in special_fish_scenes:
+		if FileAccess.file_exists("res://" + scene_name):
+			print(scene_name + " already exists")
+			continue
+		
+		var settings = special_fish_scenes[scene_name]
+		
+		# Build properties string
+		var properties_str = ""
+		for prop in settings["properties"]:
+			var value = settings["properties"][prop]
+			if typeof(value) == TYPE_FLOAT:
+				properties_str += "%s = %f\n" % [prop, value]
+			elif typeof(value) == TYPE_BOOL:
+				properties_str += "%s = %s\n" % [prop, str(value).to_lower()]
+			else:
+				properties_str += "%s = %s\n" % [prop, str(value)]
+		
+		var template_content = """[gd_scene load_steps=2 format=3 uid="uid://PLACEHOLDER_UID"]
+
+[ext_resource type="Script" path="%s" id="1_fish"]
+
+[node name="%s" type="CharacterBody3D"]
+script = ExtResource("1_fish")
+%s
+""" % [
+			settings["script"],
+			scene_name.get_basename(),
+			properties_str
+		]
+		
+		# Save the content to the scene file
+		var file = FileAccess.open("res://" + scene_name, FileAccess.WRITE)
+		if file:
+			file.store_string(template_content)
+			file.close()
+			print("Created " + scene_name + " successfully")
+		else:
+			push_error("Failed to create " + scene_name + " file")
+
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
 			
 # Create a waterfall at the specified position with height and width
 func create_waterfall(position: Vector3, height: float, width: float = 5.0):
@@ -431,3 +719,8 @@ func _on_body_exited_water(body):
 func apply_water_physics(player, in_water: bool):
 	# Water physics implementation remains unchanged...
 	pass
+	
+	
+	
+	
+	
