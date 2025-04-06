@@ -24,7 +24,7 @@ class_name AstronomicalSystem
 @export var ambient_night_intensity: float = 0.02  # Ambient light during night
 
 # Moon properties
-@export var primary_moon_size: float = 10.0  # Visual size of primary moon
+@export var primary_moon_size: float = 1000.0  # Visual size of primary moon
 @export var primary_moon_orbit_period: float = 27.3  # Days for full orbit (like Earth's moon)
 @export var primary_moon_phase_offset: float = 0.0  # Initial phase offset (0-1)
 @export var primary_moon_inclination: float = 5.1  # Orbit inclination in degrees
@@ -32,7 +32,7 @@ class_name AstronomicalSystem
 @export var primary_moon_intensity: float = 0.2  # Light intensity from moon
 
 # Secondary moon properties
-@export var secondary_moon_size: float = 6.0  # Visual size of secondary moon
+@export var secondary_moon_size: float = 600.0  # Visual size of secondary moon
 @export var secondary_moon_orbit_period: float = 43.6  # Days for full orbit (longer than primary)
 @export var secondary_moon_phase_offset: float = 0.5  # Initial phase offset (0-1)
 @export var secondary_moon_inclination: float = 12.3  # Orbit inclination in degrees
@@ -66,9 +66,9 @@ var star_parent: Node3D
 var stars: Array = []
 
 # Orbit calculation variables
-var sun_orbit_radius: float = 1000.0  # Arbitrary large value for skybox positioning
-var primary_moon_orbit_radius: float = 800.0
-var secondary_moon_orbit_radius: float = 900.0
+var sun_orbit_radius: float = 10000.0  # Arbitrary large value for skybox positioning
+var primary_moon_orbit_radius: float = 8000.0
+var secondary_moon_orbit_radius: float = 9000.0
 
 func _ready():
 	# Initialize time based on starting hour
