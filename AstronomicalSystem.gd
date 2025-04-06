@@ -4,7 +4,7 @@ class_name AstronomicalSystem
 
 # Time settings
 @export var day_length: float = 1200.0  # Seconds per full day cycle
-@export var time_scale: float = 100.0  # Speed multiplier for time
+@export var time_scale: float = 1000.0  # Speed multiplier for time
 @export var start_time: float = 8.0  # Starting hour (24-hour format)
 
 # World parameters (Earth-like by default)
@@ -66,9 +66,9 @@ var star_parent: Node3D
 var stars: Array = []
 
 # Orbit calculation variables
-var sun_orbit_radius: float = 10000.0  # Arbitrary large value for skybox positioning
-var primary_moon_orbit_radius: float = 8000.0
-var secondary_moon_orbit_radius: float = 9000.0
+var sun_orbit_radius: float = 100000.0  # Arbitrary large value for skybox positioning
+var primary_moon_orbit_radius: float = 80000.0
+var secondary_moon_orbit_radius: float = 90000.0
 
 func _ready():
 	# Initialize time based on starting hour
@@ -275,7 +275,7 @@ func create_stars():
 	add_child(star_parent)
 	
 	# Create skybox for stars
-	var skybox_radius = 1200.0  # Slightly larger than sun/moon orbits
+	var skybox_radius = 12000.0  # Slightly larger than sun/moon orbits
 	
 	# Create star meshes
 	for i in range(star_count):
