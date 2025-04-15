@@ -213,13 +213,15 @@ func create_primary_moon():
 	primary_moon_light.shadow_bias = 0.05
 	primary_moon_light.directional_shadow_max_distance = 300.0
 	
-	# Create moon visual mesh with realistic texture
+	# Improved moon material
 	var moon_material = StandardMaterial3D.new()
 	moon_material.albedo_color = primary_moon_color
+	moon_material.metallic = 0.0  # Reduce metallic
 	moon_material.roughness = 0.9
+	moon_material.emission_enabled = true  # Add self-illumination
+	moon_material.emission = primary_moon_color.darkened(0.2)  # Slight glow
+	moon_material.emission_energy = 0.7
 	moon_material.billboard_mode = StandardMaterial3D.BILLBOARD_ENABLED
-	moon_material.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
-	moon_material.no_depth_test = false
 	
 	var moon_sphere = SphereMesh.new()
 	moon_sphere.radius = primary_moon_size
@@ -246,14 +248,15 @@ func create_secondary_moon():
 	secondary_moon_light.shadow_bias = 0.05
 	secondary_moon_light.directional_shadow_max_distance = 200.0
 	
-	# Create moon visual mesh with realistic texture
+	# Improved moon material
 	var moon_material = StandardMaterial3D.new()
-	moon_material.albedo_color = secondary_moon_color
-	moon_material.roughness = 0.85
+	moon_material.albedo_color = primary_moon_color
+	moon_material.metallic = 0.0  # Reduce metallic
+	moon_material.roughness = 0.9
+	moon_material.emission_enabled = true  # Add self-illumination
+	moon_material.emission = primary_moon_color.darkened(0.2)  # Slight glow
+	moon_material.emission_energy = 0.7
 	moon_material.billboard_mode = StandardMaterial3D.BILLBOARD_ENABLED
-	
-	moon_material.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
-	moon_material.no_depth_test = false
 	
 	var moon_sphere = SphereMesh.new()
 	moon_sphere.radius = secondary_moon_size
@@ -290,17 +293,18 @@ func create_stars():
 		star_parent.add_child(star)
 		stars.append(star)
 
+
+# In AstronomicalSystem.gd
 func create_star_instance(position: Vector3, in_galactic_plane: bool) -> MeshInstance3D:
 	# Create star mesh
 	var star_mesh = SphereMesh.new()
-	
-	# Randomize star size
-	var size_range = [0.1, 0.5] if in_galactic_plane else [0.1, 0.3]
+
+	# Increase star size significantly
+	var size_range = [5.0, 20.0] if in_galactic_plane else [3.0, 15.0]
 	var star_size = randf_range(size_range[0], size_range[1])
-	
+
 	star_mesh.radius = star_size
 	star_mesh.height = star_size * 2.0
-	
 	# Create star instance
 	var star_instance = MeshInstance3D.new()
 	star_instance.mesh = star_mesh
@@ -338,10 +342,9 @@ func create_star_instance(position: Vector3, in_galactic_plane: bool) -> MeshIns
 		brightness *= 1.3
 	
 	star_material.emission = star_color
-	star_material.emission_energy = brightness
+	star_material.emission_energy = brightness * 5.0
 	
 	star_instance.material_override = star_material
-	
 	return star_instance
 
 func random_point_on_sphere(in_galactic_plane: bool) -> Vector3:
