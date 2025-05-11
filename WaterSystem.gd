@@ -1,6 +1,6 @@
 extends Node3D
 
-class_name WaterSystem
+class_name sWaterSystem
 
 # Water Properties
 @export var water_level: float = -5.0  # Global water level

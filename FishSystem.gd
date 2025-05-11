@@ -3,74 +3,29 @@ extends Node3D
 class_name FishSystem
 
 # Fish population settings
-@export var max_fish_per_chunk: int = 15
-@export var fish_spawn_chance: float = 0.3
+@export var max_fish_per_chunk: int = 8
+@export var fish_spawn_chance: float = 0.8  # Higher chance to make sure fish spawn
 @export var min_fish_depth: float = 0.5  # Min depth below water
 @export var max_fish_depth: float = 10.0  # Max depth below water
-@export var min_fish_per_school: int = 3  # Minimum fish in a school
-@export var max_fish_per_school: int = 7  # Maximum fish in a school
 
 # Fish behaviors
-@export var fish_idle_speed: float = 0.5  # Speed when idling
-@export var fish_flee_speed: float = 2.0  # Speed when fleeing
+@export var fish_idle_speed: float = 0.8  # Speed when idling
+@export var fish_flee_speed: float = 2.5  # Speed when fleeing
 @export var fish_wander_radius: float = 5.0  # How far fish can wander from spawn point
-@export var fish_update_interval: float = 0.5  # How often to update fish behaviors
+@export var fish_update_interval: float = 0.2  # How often to update fish behaviors
 
 # References
 var water_system = null  # Reference to parent water system
-var terrain_generator = null  # Reference to terrain generator
 var active_fish = []  # Active fish in the world
 var fish_chunks = {}  # Tracks which chunks have fish
-var fish_types = {}  # Different types of fish
-
-# Basic fish configurations
-var fish_configs = {
-	"default": {
-		"color": Color(0.3, 0.6, 0.9),
-		"size": Vector3(0.4, 0.15, 0.08),
-		"speed": 1.0,
-		"depth_range": [0.5, 5.0],
-		"biomes": ["TEMPERATE_FOREST", "SNOWY_MOUNTAINS"],
-		"schooling": true,
-		"school_size": [3, 8],
-		"has_special_behavior": false
-	},
-	"tropical": {
-		"color": Color(0.9, 0.5, 0.1),
-		"size": Vector3(0.3, 0.12, 0.06),
-		"speed": 1.2,
-		"depth_range": [0.5, 3.0],
-		"biomes": ["TROPICAL_JUNGLE"],
-		"schooling": true,
-		"school_size": [5, 12],
-		"has_special_behavior": false
-	},
-	"deep": {
-		"color": Color(0.1, 0.2, 0.4),
-		"size": Vector3(0.6, 0.2, 0.1),
-		"speed": 0.7,
-		"depth_range": [5.0, 10.0],
-		"biomes": ["TEMPERATE_FOREST", "TROPICAL_JUNGLE"],
-		"schooling": false,
-		"school_size": [1, 2],
-		"has_special_behavior": false
-	},
-	"jumping": {
-		"color": Color(0.7, 0.9, 0.3),
-		"size": Vector3(0.45, 0.2, 0.1),
-		"speed": 1.5,
-		"depth_range": [0.2, 2.0],
-		"biomes": ["TEMPERATE_FOREST", "TROPICAL_JUNGLE"],
-		"schooling": false,
-		"school_size": [1, 3],
-		"has_special_behavior": true,
-		"jump_interval": [5.0, 20.0],
-		"jump_height": 3.0
-	}
-}
 
 # Timer for fish updates
 var update_timer: float = 0.0
+var fish_parent: Node3D
+
+# DEBUG - used to count fish instances
+var total_fish_created = 0
+var debug_fish_count_timer = 0.0
 
 func _ready():
 	# Find water system (parent)
@@ -78,14 +33,13 @@ func _ready():
 	if not water_system or not water_system.has_method("get_water_level"):
 		push_error("FishSystem requires a parent water system with get_water_level method")
 	
-	# Find terrain generator
-	terrain_generator = get_node_or_null("/root/TerrainGenerator")
-	
-	# Create fish mesh resources
-	create_fish_meshes()
+	# Create a parent node for all fish
+	fish_parent = Node3D.new()
+	fish_parent.name = "FishParent"
+	add_child(fish_parent)
 	
 	# Debug message
-	print("FishSystem initialized with " + str(fish_types.size()) + " fish types")
+	print("ImprovedFishSystem initialized")
 
 func _process(delta):
 	# Update timer for fish behaviors
@@ -94,78 +48,11 @@ func _process(delta):
 		update_timer = 0.0
 		update_fish_behaviors()
 	
-	# Check for player interactions with fish
-	check_player_interactions()
-
-func create_fish_meshes():
-	# Create basic fish mesh
-	var basic_fish = create_basic_fish_mesh()
-	fish_types["default"] = basic_fish
-	
-	# Create tropical fish - more colorful variation
-	var tropical_fish = create_basic_fish_mesh()
-	var tropical_material = StandardMaterial3D.new()
-	tropical_material.albedo_color = Color(0.9, 0.5, 0.1)
-	tropical_material.roughness = 0.2
-	tropical_material.metallic = 0.8
-	tropical_fish.material_override = tropical_material
-	fish_types["tropical"] = tropical_fish
-	
-	# Create deep water fish - darker, larger
-	var deep_fish = create_basic_fish_mesh(1.5)  # Larger scale
-	var deep_material = StandardMaterial3D.new()
-	deep_material.albedo_color = Color(0.1, 0.2, 0.4)
-	deep_material.roughness = 0.3
-	deep_material.metallic = 0.5
-	deep_material.emission_enabled = true
-	deep_material.emission = Color(0.2, 0.4, 0.8)
-	deep_material.emission_energy = 0.5
-	deep_fish.material_override = deep_material
-	fish_types["deep"] = deep_fish
-	
-	# Create jumping fish
-	var jumping_fish = create_basic_fish_mesh()
-	var jumping_material = StandardMaterial3D.new()
-	jumping_material.albedo_color = Color(0.7, 0.9, 0.3)
-	jumping_fish.material_override = jumping_material
-	fish_types["jumping"] = jumping_fish
-
-# Create a basic fish mesh that all fish can use
-func create_basic_fish_mesh(scale_factor: float = 1.0) -> MeshInstance3D:
-	var fish_body = MeshInstance3D.new()
-	fish_body.name = "FishBody"
-	
-	# Create fish body (tapered shape)
-	var fish_mesh = PrismMesh.new()
-	fish_mesh.size = Vector3(0.4, 0.15, 0.08) * scale_factor
-	fish_body.mesh = fish_mesh
-	
-	# Create default material
-	var material = StandardMaterial3D.new()
-	material.albedo_color = Color(0.3, 0.6, 0.9)
-	material.metallic = 0.7
-	material.roughness = 0.2
-	fish_body.material_override = material
-	
-	# Add tail fin
-	var tail_fin = MeshInstance3D.new()
-	tail_fin.name = "TailFin"
-	
-	var tail_mesh = PrismMesh.new()
-	tail_mesh.size = Vector3(0.2, 0.12, 0.04) * scale_factor
-	tail_fin.mesh = tail_mesh
-	
-	# Position tail
-	tail_fin.position = Vector3(-0.3, 0, 0) * scale_factor
-	tail_fin.material_override = material
-	
-	# Add to fish body
-	fish_body.add_child(tail_fin)
-	
-	# Rotate to face forward direction
-	fish_body.rotation_degrees.y = 90
-	
-	return fish_body
+	# Debug fish count
+	debug_fish_count_timer += delta
+	if debug_fish_count_timer >= 3.0:
+		debug_fish_count_timer = 0.0
+		print("Active fish: ", active_fish.size(), " Total created: ", total_fish_created)
 
 # Spawn fish in a specific water chunk
 func spawn_fish_in_chunk(chunk_pos: Vector2, water_chunk_node: Node3D) -> int:
@@ -181,96 +68,55 @@ func spawn_fish_in_chunk(chunk_pos: Vector2, water_chunk_node: Node3D) -> int:
 	var world_pos_x = chunk_pos.x * chunk_size
 	var world_pos_z = chunk_pos.y * chunk_size
 	
-	# Determine biome at this position
-	var biome_name = "TEMPERATE_FOREST"  # Default
-	if terrain_generator and terrain_generator.has_method("determine_biome"):
-		var biome_pos = Vector2(world_pos_x + chunk_size/2, world_pos_z + chunk_size/2)
-		var biome_type = terrain_generator.determine_biome(biome_pos)
-		if terrain_generator.has_method("biome_type_to_string"):
-			biome_name = terrain_generator.biome_type_to_string(biome_type)
-	
 	# Only spawn fish with random chance
 	if randf() > fish_spawn_chance:
 		fish_chunks[chunk_pos] = []  # Mark as processed but empty
 		return 0
 	
-	# Create a parent node for fish in this chunk
-	var fish_parent = Node3D.new()
-	fish_parent.name = "Fish_Chunk_%d_%d" % [chunk_pos.x, chunk_pos.y]
-	water_chunk_node.add_child(fish_parent)
-	
 	# Track fish in this chunk
 	fish_chunks[chunk_pos] = []
 	
-	# Determine how many schools of fish to spawn
-	var num_schools = randi() % 3 + 1  # 1-3 schools per chunk
+	# Determine how many fish to spawn (reduced to avoid overwhelming)
+	var num_fish = randi() % max_fish_per_chunk + 1
 	var total_fish_spawned = 0
 	
-	# Spawn schools of fish
-	for school_idx in range(num_schools):
-		# Pick a fish type appropriate for this biome
-		var valid_fish_types = []
-		for fish_type in fish_configs.keys():
-			var config = fish_configs[fish_type]
-			if biome_name in config["biomes"]:
-				valid_fish_types.append(fish_type)
-		
-		# If no valid fish for this biome, use default
-		if valid_fish_types.size() == 0:
-			valid_fish_types = ["default"]
-		
-		var fish_type = valid_fish_types[randi() % valid_fish_types.size()]
-		var config = fish_configs[fish_type]
-		
-		# Choose a school size
-		var school_size = randi() % (config["school_size"][1] - config["school_size"][0] + 1) + config["school_size"][0]
-		school_size = min(school_size, max_fish_per_chunk - total_fish_spawned)
-		
-		if school_size <= 0:
-			continue
-		
+	# Spawn individual fish
+	for i in range(num_fish):
 		# Choose a spawn position within the chunk
-		var spawn_x = randf_range(0, chunk_size) + world_pos_x
-		var spawn_z = randf_range(0, chunk_size) + world_pos_z
+		var spawn_x = randf_range(world_pos_x, world_pos_x + chunk_size)
+		var spawn_z = randf_range(world_pos_z, world_pos_z + chunk_size)
 		
-		# Determine water depth at this position
-		var spawn_y = water_level - randf_range(config["depth_range"][0], config["depth_range"][1])
+		# Set depth below water level
+		var spawn_y = water_level - randf_range(min_fish_depth, max_fish_depth)
 		
-		# Create the school
-		for i in range(school_size):
-			# Calculate offset from school center
-			var offset_x = randf_range(-2.0, 2.0)
-			var offset_y = randf_range(-0.5, 0.5)
-			var offset_z = randf_range(-2.0, 2.0)
-			
-			# Create fish
-			var fish = create_fish(fish_type, Vector3(spawn_x + offset_x, spawn_y + offset_y, spawn_z + offset_z))
-			if fish != null:
-				fish_parent.add_child(fish)
-				fish_chunks[chunk_pos].append(fish)
-				active_fish.append(fish)
-				total_fish_spawned += 1
+		# Create fish
+		var fish = create_fish(Vector3(spawn_x, spawn_y, spawn_z))
+		if fish != null:
+			fish_parent.add_child(fish)
+			fish_chunks[chunk_pos].append(fish)
+			active_fish.append(fish)
+			total_fish_spawned += 1
+			total_fish_created += 1
 	
+	print("Spawned ", total_fish_spawned, " fish in chunk ", chunk_pos)
 	return total_fish_spawned
 
 # Create a fish with all components
-func create_fish(fish_type: String, position: Vector3) -> Node3D:
-	if not fish_types.has(fish_type):
-		push_error("Unknown fish type: " + fish_type)
-		return null
-	
+func create_fish(position: Vector3) -> Node3D:
 	# Create base fish node
 	var fish = CharacterBody3D.new()
-	fish.name = "Fish_" + fish_type
+	fish.name = "Fish"
 	fish.position = position
 	
 	# Store initial position and fish type
 	fish.set_meta("initial_position", position)
-	fish.set_meta("fish_type", fish_type)
-	fish.set_meta("config", fish_configs[fish_type])
+	fish.set_meta("speed", randf_range(0.8, 1.5))
+	fish.set_meta("target_position", position)
+	fish.set_meta("time_until_new_target", randf_range(3.0, 8.0))
+	fish.set_meta("is_fleeing", false)
 	
-	# Add mesh instance
-	var mesh_instance = fish_types[fish_type].duplicate()
+	# Create a simple fish mesh
+	var mesh_instance = create_simple_fish_mesh()
 	fish.add_child(mesh_instance)
 	
 	# Add collision shape
@@ -282,18 +128,52 @@ func create_fish(fish_type: String, position: Vector3) -> Node3D:
 	collision.rotation_degrees.z = 90  # Orient along fish forward direction
 	fish.add_child(collision)
 	
-	# Set up movement variables
-	fish.set_meta("speed", fish_configs[fish_type]["speed"])
-	fish.set_meta("target_position", position)
-	fish.set_meta("time_until_new_target", randf_range(3.0, 8.0))
-	fish.set_meta("is_fleeing", false)
-	
-	# Special behavior for jumping fish
-	if fish_configs[fish_type]["has_special_behavior"]:
-		if fish_type == "jumping":
-			fish.set_meta("jump_timer", randf_range(10.0, 30.0))
+	# Randomize initial rotation
+	fish.rotation.y = randf_range(0, TAU)
 	
 	return fish
+
+# Create a simple colorful fish mesh
+func create_simple_fish_mesh() -> MeshInstance3D:
+	var fish_body = MeshInstance3D.new()
+	fish_body.name = "FishMesh"
+	
+	# Create body
+	var body_mesh = PrismMesh.new()
+	body_mesh.size = Vector3(0.4, 0.15, 0.08)
+	fish_body.mesh = body_mesh
+	
+	# Create material with random colorful fish
+	var material = StandardMaterial3D.new()
+	
+	# Generate a bright, saturated color
+	var hue = randf_range(0.0, 1.0)
+	var fish_color = Color.from_hsv(hue, 0.8, 0.9)
+	
+	material.albedo_color = fish_color
+	material.metallic = 0.7
+	material.roughness = 0.2
+	fish_body.material_override = material
+	
+	# Add tail fin
+	var tail_fin = MeshInstance3D.new()
+	tail_fin.name = "TailFin"
+	
+	var tail_mesh = PrismMesh.new()
+	tail_mesh.size = Vector3(0.2, 0.12, 0.04)
+	tail_fin.mesh = tail_mesh
+	
+	# Position tail behind body
+	tail_fin.position = Vector3(-0.3, 0, 0)
+	tail_fin.material_override = material
+	
+	# Add to fish body
+	fish_body.add_child(tail_fin)
+	
+	# Rotate to face forward direction
+	fish_body.rotation_degrees.y = 90
+	
+	return fish_body
 
 # Update behaviors for all active fish
 func update_fish_behaviors():
@@ -306,8 +186,6 @@ func update_fish_behaviors():
 		
 		# Get fish metadata
 		var initial_position = fish.get_meta("initial_position")
-		var fish_type = fish.get_meta("fish_type")
-		var config = fish.get_meta("config")
 		var speed = fish.get_meta("speed")
 		var target_position = fish.get_meta("target_position")
 		var time_until_new_target = fish.get_meta("time_until_new_target")
@@ -356,7 +234,7 @@ func update_fish_behaviors():
 		var velocity = direction * current_speed * speed
 		
 		# Apply small vertical wobble for natural movement
-		velocity.y += sin(Time.get_ticks_msec() / 500.0) * 0.2
+		velocity.y += sin(Time.get_ticks_msec() / 500.0) * 0.1
 		
 		# Apply water flow if applicable
 		if water_system.has_method("get_flow_direction") and water_system.has_method("get_flow_strength"):
@@ -366,11 +244,23 @@ func update_fish_behaviors():
 		
 		# Set fish velocity
 		fish.velocity = velocity
-		fish.move_and_slide()
 		
-		# Process special behaviors
-		if config["has_special_behavior"]:
-			process_special_behavior(fish, fish_type)
+		# Move the fish
+		# First check for walls or obstacles
+		var collision = fish.move_and_collide(velocity * fish_update_interval, true)
+		if collision:
+			# If we would hit something, change direction
+			var reflection = velocity.bounce(collision.get_normal())
+			fish.velocity = reflection
+			fish.set_meta("target_position", fish.global_position + reflection.normalized() * 5.0)
+		else:
+			# No collision, proceed with movement
+			fish.position += velocity * fish_update_interval
+		
+		# Make sure fish stay underwater
+		var water_level = water_system.get_water_level()
+		if fish.position.y > water_level - 0.5:
+			fish.position.y = water_level - 0.5
 	
 	# Remove fish that are no longer valid
 	for fish in fish_to_remove:
@@ -396,30 +286,36 @@ func get_random_position_for_fish(fish: Node3D) -> Vector3:
 	
 	return target
 
-# Process special behaviors for special fish types
-func process_special_behavior(fish: Node3D, fish_type: String):
-	# Jumping fish special behavior
-	if fish_type == "jumping":
-		var jump_timer = 0.0
-		if fish.has_meta("jump_timer"):
-			jump_timer = fish.get_meta("jump_timer")
-		
-		jump_timer -= fish_update_interval
-		
-		# Time to jump?
-		if jump_timer <= 0:
-			# Only jump if close to surface
-			if water_system.has_method("get_water_level"):
-				var water_level = water_system.get_water_level()
-				if fish.global_position.y > water_level - 2.0:
-					start_fish_jump(fish)
-				
-			# Reset timer for next jump
-			var config = fish.get_meta("config")
-			jump_timer = randf_range(config["jump_interval"][0], config["jump_interval"][1])
-		
-		# Update timer meta
-		fish.set_meta("jump_timer", jump_timer)
+# Clear all fish in a specific chunk
+func clear_fish_chunk(chunk_pos: Vector2):
+	if not fish_chunks.has(chunk_pos):
+		return
+	
+	# Get all fish in this chunk
+	var fish_list = fish_chunks[chunk_pos]
+	
+	# Remove fish from active list and free them
+	for fish in fish_list:
+		if is_instance_valid(fish):
+			active_fish.erase(fish)
+			fish.queue_free()
+	
+	# Clear chunk from tracking
+	fish_chunks.erase(chunk_pos)
+
+# Add random jumping fish behavior
+func make_fish_jump():
+	# Find a random fish near the surface to make jump
+	var candidates = []
+	var water_level = water_system.get_water_level()
+	
+	for fish in active_fish:
+		if is_instance_valid(fish) and fish.position.y > water_level - 2.0:
+			candidates.append(fish)
+	
+	if candidates.size() > 0:
+		var fish = candidates[randi() % candidates.size()]
+		start_fish_jump(fish)
 
 # Start a jumping animation for a fish
 func start_fish_jump(fish: Node3D):
@@ -458,7 +354,7 @@ func start_fish_jump(fish: Node3D):
 		splash_pos.y = water_level
 		water_system.create_splash_effect(splash_pos, 0.5)
 
-# Continue a jumping animation
+# Continue a jumping animation during updates
 func continue_fish_jump(fish: Node3D, delta: float):
 	# Get jump parameters
 	var jump_start = fish.get_meta("jump_start")
@@ -500,68 +396,11 @@ func continue_fish_jump(fish: Node3D, delta: float):
 	new_pos.y = water_level + vertical_offset  # Jump above water
 	fish.global_position = new_pos
 	
-	# Update rotation to follow jump arc
-	var dir_up = Vector3(0, 1, 0)
-	var dir_forward = (jump_end - jump_start).normalized()
-	
-	# Calculate angle based on arc position
-	var arc_angle = (0.5 - abs(t - 0.5)) * 2.0 * PI/4  # Max angle at apex
-	
-	# Apply rotations
-	fish.look_at(fish.global_position + dir_forward)
-	fish.rotate_object_local(Vector3(1, 0, 0), arc_angle)
-	
 	# Update progress meta
 	fish.set_meta("jump_progress", jump_progress)
 
-# Check for player interactions with fish
-func check_player_interactions():
-	# Get player
-	var player = get_node_or_null("/root/TerrainGenerator/Player")
-	if not player:
-		return
-	
-	# Check proximity with active fish
-	for fish in active_fish:
-		if not is_instance_valid(fish):
-			continue
-			
-		# Update jumping fish
-		if fish.has_meta("is_jumping") and fish.get_meta("is_jumping"):
-			continue_fish_jump(fish, fish_update_interval)
-			continue
-			
-		# If player is too close, make fish flee
-		var distance = player.global_position.distance_to(fish.global_position)
-		if distance < 3.0:
-			fish.set_meta("is_fleeing", true)
-			fish.set_meta("time_until_new_target", 0.0)  # Force new target
-
-# Clear all fish in a specific chunk
-func clear_fish_chunk(chunk_pos: Vector2):
-	if not fish_chunks.has(chunk_pos):
-		return
-	
-	# Get all fish in this chunk
-	var fish_list = fish_chunks[chunk_pos]
-	
-	# Remove fish from active list and free them
-	for fish in fish_list:
-		if is_instance_valid(fish):
-			active_fish.erase(fish)
-			fish.queue_free()
-	
-	# Clear chunk from tracking
-	fish_chunks.erase(chunk_pos)
-
-# Get the water level
-func get_water_level() -> float:
-	if water_system and water_system.has_method("get_water_level"):
-		return water_system.get_water_level()
-	return 0.0
-
-# Get the chunk size
-func get_chunk_size() -> float:
-	if water_system and water_system.has_method("get_chunk_size"):
-		return water_system.get_chunk_size()
-	return 128.0
+# Trigger some jumping fish every now and then
+func occasional_fish_jumps():
+	# 1% chance per update to make a fish jump
+	if randf() < 0.01:
+		make_fish_jump()
