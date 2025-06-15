@@ -58,11 +58,8 @@ func _ready():
 	detection_area.body_entered.connect(_on_body_entered_detection)
 	detection_area.body_exited.connect(_on_body_exited_detection)
 	
-	# Find water system node
-	water_system = get_node_or_null("/root/TerrainGenerator/WaterSystem")
-
-	# Find water system node (improved method that tries multiple paths)
-	water_system = get_node_or_null("/root/TerrainGenerator/WaterSystem")
+        # Find water system node
+        water_system = get_node_or_null("/root/TerrainGenerator/WaterSystem")
 	
 	if not water_system:
 		# Try alternative paths
@@ -265,8 +262,10 @@ func _on_body_entered_detection(body):
 		time_until_new_target = 3.0
 
 func _on_body_exited_detection(body):
-	if body is Fish:
-		nearby_fish.erase(body)
-	elif body.name == "Player":
-		# Return to normal speed when player leaves detection radius
-		swim_speed = 1.5
+        if body is Fish:
+                nearby_fish.erase(body)
+        elif body.name == "Player":
+                # Return to normal speed when player leaves detection radius
+                swim_speed = 1.5
+                time_until_new_target = randf_range(3.0, 8.0)
+
