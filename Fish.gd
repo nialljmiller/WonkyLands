@@ -39,7 +39,7 @@ func _ready():
 	shape.radius = fish_size.x / 4
 	shape.height = fish_size.x
 	collision.shape = shape
-	collision.rotation_degrees.z = 90  # Orient capsule along fish forward axis
+        collision.rotation_degrees.z = 90  # Orient capsule along fish forward axis
 	add_child(collision)
 	
 	# Add detection area for player and other fish
