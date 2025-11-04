@@ -192,12 +192,14 @@ func generate_terrain_chunk(chunk_pos: Vector2):
 	chunk_node.name = "Chunk_%d_%d" % [chunk_pos.x, chunk_pos.y]
 	add_child(chunk_node)
 	
-	# Create mesh data structures
-	var surface_tool = SurfaceTool.new()
-	var mesh = ArrayMesh.new()
-	
-	# Begin mesh construction
-	surface_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+        # Create mesh data structures
+        var mesh = ArrayMesh.new()
+
+        # Prepare vertex storage for the heightmap grid
+        var vertex_count = (chunk_size + 1) * (chunk_size + 1)
+        var vertices := PackedVector3Array()
+        vertices.resize(vertex_count)
+        var vertex_offset = 0
 	
 	# Determine dominant biome for this chunk
 	var chunk_center = Vector2(
@@ -207,42 +209,90 @@ func generate_terrain_chunk(chunk_pos: Vector2):
 	var dominant_biome = determine_biome(chunk_center)
 	
 	# Generate vertices for this chunk
-	for z in range(chunk_size + 1):  # +1 to avoid seams between chunks
-		for x in range(chunk_size + 1):
-			# Calculate global position
-			var global_x = world_pos_x + x
-			var global_z = world_pos_z + z
-			
-			# Calculate biome at this position for height adjustments
-			var pos_biome = determine_biome(Vector2(global_x, global_z))
-			
-			# Calculate height using noise
-			var base_height = noise.get_noise_2d(global_x * noise_scale, global_z * noise_scale) * amplitude
-			
-			# Adjust height based on biome
-			var y = apply_biome_height_adjustments(base_height, pos_biome, Vector2(global_x, global_z))
-			
-			# Add vertex (in local chunk coordinates)
-			surface_tool.add_vertex(Vector3(x, y, z))
-	
-	# Generate triangles
-	for z in range(chunk_size):
-		for x in range(chunk_size):
-			var i = z * (chunk_size + 1) + x
-			
-			# First triangle
-			surface_tool.add_index(i)
-			surface_tool.add_index(i + 1)
-			surface_tool.add_index(i + (chunk_size + 1))
-			
-			# Second triangle
-			surface_tool.add_index(i + 1)
-			surface_tool.add_index(i + (chunk_size + 1) + 1)
-			surface_tool.add_index(i + (chunk_size + 1))
-	
-	# Finalize mesh
-	surface_tool.generate_normals()
-	mesh = surface_tool.commit()
+        for z in range(chunk_size + 1):  # +1 to avoid seams between chunks
+                for x in range(chunk_size + 1):
+                        # Calculate global position
+                        var global_x = world_pos_x + x
+                        var global_z = world_pos_z + z
+
+                        # Calculate biome at this position for height adjustments
+                        var pos_biome = determine_biome(Vector2(global_x, global_z))
+
+                        # Calculate height using noise
+                        var base_height = noise.get_noise_2d(global_x * noise_scale, global_z * noise_scale) * amplitude
+
+                        # Adjust height based on biome
+                        var y = apply_biome_height_adjustments(base_height, pos_biome, Vector2(global_x, global_z))
+
+                        # Store vertex (in local chunk coordinates)
+                        vertices[vertex_offset] = Vector3(x, y, z)
+                        vertex_offset += 1
+
+        # Build triangle indices for the grid
+        var indices := PackedInt32Array()
+        for z in range(chunk_size):
+                for x in range(chunk_size):
+                        var i = z * (chunk_size + 1) + x
+                        var right = i + 1
+                        var below = i + (chunk_size + 1)
+                        var below_right = below + 1
+
+                        # First triangle
+                        indices.append(i)
+                        indices.append(right)
+                        indices.append(below)
+
+                        # Second triangle
+                        indices.append(right)
+                        indices.append(below_right)
+                        indices.append(below)
+
+        # Calculate smooth normals from the generated triangles
+        var normals := PackedVector3Array()
+        normals.resize(vertex_count)
+        for n in range(normals.size()):
+                normals[n] = Vector3.ZERO
+
+        for t in range(0, indices.size(), 3):
+                var idx0 = indices[t]
+                var idx1 = indices[t + 1]
+                var idx2 = indices[t + 2]
+
+                var v0 = vertices[idx0]
+                var v1 = vertices[idx1]
+                var v2 = vertices[idx2]
+
+                var face_normal = (v1 - v0).cross(v2 - v0)
+                if face_normal.length_squared() == 0.0:
+                        continue
+
+                var n0 = normals[idx0]
+                n0 += face_normal
+                normals[idx0] = n0
+
+                var n1 = normals[idx1]
+                n1 += face_normal
+                normals[idx1] = n1
+
+                var n2 = normals[idx2]
+                n2 += face_normal
+                normals[idx2] = n2
+
+        for n in range(normals.size()):
+                var accumulated = normals[n]
+                if accumulated.length_squared() > 0.0:
+                        normals[n] = accumulated.normalized()
+                else:
+                        normals[n] = Vector3.UP
+
+        # Assemble mesh surface arrays
+        var arrays = []
+        arrays.resize(Mesh.ARRAY_MAX)
+        arrays[Mesh.ARRAY_VERTEX] = vertices
+        arrays[Mesh.ARRAY_NORMAL] = normals
+        arrays[Mesh.ARRAY_INDEX] = indices
+
+        mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	
 	# Create mesh instance
 	var mesh_instance = MeshInstance3D.new()
