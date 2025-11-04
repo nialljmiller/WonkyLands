@@ -3,13 +3,22 @@ extends CharacterBody3D
 @export var max_speed: float = 85.0
 @export var acceleration: float = 18.0
 @export var throttle_response: float = 1.8
-@export var lift_force: float = 9.0
-@export var gravity_force: float = 14.0
 @export var idle_gravity_force: float = 18.0
 @export var takeoff_speed: float = 35.0
 @export var pitch_speed: float = 1.2
 @export var yaw_speed: float = 0.8
 @export var roll_speed: float = 1.8
+@export var mass: float = 1200.0
+@export var max_thrust: float = 26000.0
+@export var wing_area: float = 16.0
+@export var air_density: float = 1.225
+@export var lift_coefficient_slope: float = 5.5
+@export var max_lift_coefficient: float = 1.4
+@export var base_drag_coefficient: float = 0.035
+@export var induced_drag_factor: float = 0.045
+@export var stall_angle_deg: float = 16.0
+@export var stall_drag_multiplier: float = 3.0
+@export var min_control_effectiveness: float = 0.2
 @export var exit_offset: Vector3 = Vector3(-2.2, 0.5, -1.5)
 
 var throttle: float = 0.0
@@ -62,22 +71,69 @@ func _handle_flight_input(delta):
         var yaw_input = Input.get_action_strength("plane_yaw_right") - Input.get_action_strength("plane_yaw_left")
         var roll_input = Input.get_action_strength("plane_roll_right") - Input.get_action_strength("plane_roll_left")
 
-        rotate_object_local(Vector3.RIGHT, pitch_input * pitch_speed * delta)
-        rotate_y(yaw_input * yaw_speed * delta)
-        rotate_object_local(Vector3.FORWARD, roll_input * roll_speed * delta)
+        var control_effectiveness = clamp(velocity.length() / max(takeoff_speed, 0.01), 0.0, 1.0)
+        control_effectiveness = lerp(min_control_effectiveness, 1.0, control_effectiveness)
+
+        rotate_object_local(Vector3.RIGHT, pitch_input * pitch_speed * delta * control_effectiveness)
+        rotate_y(yaw_input * yaw_speed * delta * control_effectiveness)
+        rotate_object_local(Vector3.FORWARD, roll_input * roll_speed * delta * control_effectiveness)
 
 func _apply_flight_physics(delta):
-        current_speed = lerp(current_speed, throttle * max_speed, acceleration * delta)
-
         var forward = -global_transform.basis.z
+        var right = global_transform.basis.x
         var up_dir = global_transform.basis.y
-        var lift_ratio = clamp(current_speed / takeoff_speed, 0.0, 1.0)
 
-        var target_velocity = forward * current_speed
-        target_velocity += up_dir * lift_force * lift_ratio
+        var speed = velocity.length()
+        current_speed = speed
 
-        velocity = velocity.lerp(target_velocity, delta * 2.0)
-        velocity.y -= gravity_force * delta * (1.0 - lift_ratio)
+        var thrust_force = forward * max_thrust * throttle
+
+        var relative_wind: Vector3
+        if speed > 0.1:
+                relative_wind = -velocity.normalized()
+        else:
+                relative_wind = -forward
+
+        var angle_of_attack = asin(clamp(relative_wind.dot(up_dir), -1.0, 1.0))
+        var angle_of_attack_deg = rad_to_deg(angle_of_attack)
+
+        var lift_coefficient = clamp(lift_coefficient_slope * angle_of_attack, -max_lift_coefficient, max_lift_coefficient)
+        var stall_factor = 1.0
+        if abs(angle_of_attack_deg) > stall_angle_deg:
+                var excess = abs(angle_of_attack_deg) - stall_angle_deg
+                stall_factor = clamp(1.0 - (excess / max(1.0, stall_angle_deg)), 0.0, 1.0)
+
+        var speed_lift_factor = clamp(speed / max(takeoff_speed, 0.01), 0.0, 1.0)
+        lift_coefficient *= stall_factor * speed_lift_factor
+
+        var dynamic_pressure = 0.5 * air_density * speed * speed
+
+        var lift_direction = right.cross(relative_wind)
+        if lift_direction.length_squared() > 0.001:
+                lift_direction = lift_direction.normalized()
+        else:
+                lift_direction = up_dir
+
+        var lift_force = lift_direction * (dynamic_pressure * wing_area * lift_coefficient)
+
+        var drag_coefficient = base_drag_coefficient + (lift_coefficient * lift_coefficient) * induced_drag_factor
+        if stall_factor < 0.999:
+                drag_coefficient *= (1.0 + (1.0 - stall_factor) * stall_drag_multiplier)
+        var drag_force = relative_wind * (dynamic_pressure * wing_area * drag_coefficient)
+
+        var gravity_force = Vector3.DOWN * 9.81 * mass
+
+        var total_force = thrust_force + lift_force - drag_force + gravity_force
+        var acceleration_vector = total_force / max(mass, 0.01)
+
+        velocity += acceleration_vector * delta
+
+        var target_forward_speed = throttle * max_speed
+        if target_forward_speed > 0.0:
+                var forward_velocity = forward * forward.dot(velocity)
+                var desired_forward_velocity = forward * target_forward_speed
+                var forward_adjustment = (desired_forward_velocity - forward_velocity) * acceleration * delta * 0.1
+                velocity += forward_adjustment
 
 func _apply_idle_physics(delta):
         throttle = lerp(throttle, 0.0, delta * 1.5)
