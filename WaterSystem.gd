@@ -45,6 +45,14 @@ class_name WaterSystem
 
 # Ocean/Lake water chunks
 var water_chunks = {}
+var water_plane_mesh: PlaneMesh
+
+# Cached shader resource and timing information
+const WATER_SHADER_PATH := "res://RealisticWaterShader.gdshader"
+var water_shader: Shader
+var wave_time: float = 0.0
+@export var shader_update_interval: float = 0.0
+var _shader_update_timer: float = 0.0
 
 # Subsystems
 var fish_system: FishSystem
@@ -54,17 +62,24 @@ var ripple_system: RippleSystem
 var debug_enabled: bool = false
 
 func _ready():
-	print("Realistic water system initializing...")
-	
-	# Initialize subsystems
-	initialize_subsystems()
-	
-	print("Water system initialized!")
+        print("Realistic water system initializing...")
+
+        # Initialize subsystems
+        initialize_subsystems()
+
+        ensure_water_shader()
+
+        print("Water system initialized!")
 
 func _process(delta):
-	# Update water waves using time and shader parameters
-	if waves_enabled:
-		update_water_shaders(delta)
+        # Update water waves using time and shader parameters
+        if waves_enabled:
+                wave_time += delta * wave_speed
+                _shader_update_timer += delta
+
+                if shader_update_interval <= 0.0 or _shader_update_timer >= shader_update_interval:
+                        update_water_shaders()
+                        _shader_update_timer = 0.0
 
 # Initialize subsystems (fish, ripples, etc.)
 func initialize_subsystems():
@@ -79,35 +94,38 @@ func initialize_subsystems():
 	add_child(ripple_system)
 
 # Update shader parameters for all water chunks
-func update_water_shaders(delta):
-	for chunk_pos in water_chunks:
-		var water_mesh = water_chunks[chunk_pos]
-		if water_mesh and is_instance_valid(water_mesh):
-			var material = water_mesh.material_override
-			if material and material is ShaderMaterial:
-				# Update time parameter for animated waves
-				var current_time = material.get_shader_parameter("time")
-				if current_time == null:
-					current_time = 0.0
-				
-				# Apply time update
-				material.set_shader_parameter("time", current_time + delta * wave_speed)
+func update_water_shaders():
+        for chunk_pos in water_chunks:
+                var water_mesh = water_chunks[chunk_pos]
+                if water_mesh and is_instance_valid(water_mesh):
+                        var material = water_mesh.material_override
+                        if material and material is ShaderMaterial:
+                                # Apply shared wave time for all chunks
+                                material.set_shader_parameter("time", wave_time)
+
+func ensure_water_shader():
+        if water_shader:
+                return
+
+        if not FileAccess.file_exists(WATER_SHADER_PATH):
+                create_water_shader()
+
+        water_shader = load(WATER_SHADER_PATH)
 
 # Creates a water chunk at the specified position
 func create_water_chunk(chunk_pos: Vector2, terrain_generator = null):
 	var world_pos_x = chunk_pos.x * water_chunk_size
 	var world_pos_z = chunk_pos.y * water_chunk_size
 	
-	# Create water mesh
-	var water_plane = PlaneMesh.new()
-	water_plane.size = Vector2(water_chunk_size, water_chunk_size)
+        # Create or reuse water mesh
+        if water_plane_mesh == null:
+                water_plane_mesh = PlaneMesh.new()
+                water_plane_mesh.size = Vector2(water_chunk_size, water_chunk_size)
+                water_plane_mesh.subdivide_width = 16
+                water_plane_mesh.subdivide_depth = 16
 	
-	# Subdivide for better wave effect and collision
-	water_plane.subdivide_width = 16
-	water_plane.subdivide_depth = 16
-	
-	var water_mesh_instance = MeshInstance3D.new()
-	water_mesh_instance.mesh = water_plane
+        var water_mesh_instance = MeshInstance3D.new()
+        water_mesh_instance.mesh = water_plane_mesh
 	water_mesh_instance.name = "WaterChunk_%d_%d" % [chunk_pos.x, chunk_pos.y]
 	
 	# Create a standard material for fallback (in case shader fails)
@@ -118,15 +136,10 @@ func create_water_chunk(chunk_pos: Vector2, terrain_generator = null):
 	standard_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	
 	# Create water material with shader
-	var water_material = ShaderMaterial.new()
-	
-	# Create the water shader if it doesn't exist
-	if not FileAccess.file_exists("res://RealisticWaterShader.gdshader"):
-		# Copy from the artifact we created earlier
-		create_water_shader()
-	
-	# Load the shader
-	water_material.shader = load("res://RealisticWaterShader.gdshader")
+        ensure_water_shader()
+
+        var water_material = ShaderMaterial.new()
+        water_material.shader = water_shader
 	
 	# Set shader parameters
 	water_material.set_shader_parameter("shallow_color", water_color)
@@ -158,7 +171,7 @@ func create_water_chunk(chunk_pos: Vector2, terrain_generator = null):
 	water_material.set_shader_parameter("flow_strength", flow_strength)
 	
 	# Initial time value
-	water_material.set_shader_parameter("time", 0.0)
+        water_material.set_shader_parameter("time", wave_time)
 	
 	# Apply material
 	water_mesh_instance.material_override = water_material if water_material.shader != null else standard_material

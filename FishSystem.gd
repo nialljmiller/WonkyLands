@@ -19,6 +19,10 @@ var water_system = null  # Reference to parent water system
 var active_fish = []  # Active fish in the world
 var fish_chunks = {}  # Tracks which chunks have fish
 
+# Spawn queue to spread out expensive instancing work
+@export var max_spawns_per_frame: int = 4
+var _pending_fish_spawns: Array = []
+
 # Timer for fish updates
 var update_timer: float = 0.0
 var fish_parent: Node3D
@@ -42,11 +46,15 @@ func _ready():
 	print("ImprovedFishSystem initialized")
 
 func _process(delta):
-	# Update timer for fish behaviors
-	update_timer += delta
-	if update_timer >= fish_update_interval:
-		update_timer = 0.0
-		update_fish_behaviors()
+        # Spawn pending fish gradually to avoid frame spikes
+        if _pending_fish_spawns.size() > 0:
+                process_pending_spawns()
+
+        # Update timer for fish behaviors
+        update_timer += delta
+        if update_timer >= fish_update_interval:
+                update_timer = 0.0
+                update_fish_behaviors()
 	
 	# Debug fish count
 	debug_fish_count_timer += delta
@@ -55,51 +63,79 @@ func _process(delta):
 		print("Active fish: ", active_fish.size(), " Total created: ", total_fish_created)
 
 # Spawn fish in a specific water chunk
-func spawn_fish_in_chunk(chunk_pos: Vector2, water_chunk_node: Node3D) -> int:
-	# Skip if we already spawned fish in this chunk
-	if fish_chunks.has(chunk_pos):
-		return 0
-	
-	# Get water level
-	var water_level = water_system.get_water_level()
-	
-	# Get chunk world position
-	var chunk_size = water_system.get_chunk_size()
-	var world_pos_x = chunk_pos.x * chunk_size
-	var world_pos_z = chunk_pos.y * chunk_size
-	
-	# Only spawn fish with random chance
-	if randf() > fish_spawn_chance:
-		fish_chunks[chunk_pos] = []  # Mark as processed but empty
-		return 0
-	
-	# Track fish in this chunk
-	fish_chunks[chunk_pos] = []
-	
-	# Determine how many fish to spawn (reduced to avoid overwhelming)
-	var num_fish = randi() % max_fish_per_chunk + 1
-	var total_fish_spawned = 0
-	
-	# Spawn individual fish
-	for i in range(num_fish):
-		# Choose a spawn position within the chunk
-		var spawn_x = randf_range(world_pos_x, world_pos_x + chunk_size)
-		var spawn_z = randf_range(world_pos_z, world_pos_z + chunk_size)
-		
-		# Set depth below water level
-		var spawn_y = water_level - randf_range(min_fish_depth, max_fish_depth)
-		
-		# Create fish
-		var fish = create_fish(Vector3(spawn_x, spawn_y, spawn_z))
-		if fish != null:
-			fish_parent.add_child(fish)
-			fish_chunks[chunk_pos].append(fish)
-			active_fish.append(fish)
-			total_fish_spawned += 1
-			total_fish_created += 1
-	
-	print("Spawned ", total_fish_spawned, " fish in chunk ", chunk_pos)
-	return total_fish_spawned
+func spawn_fish_in_chunk(chunk_pos: Vector2, _water_chunk_node: Node3D) -> int:
+        # Skip if we already spawned fish in this chunk
+        if fish_chunks.has(chunk_pos):
+                return 0
+
+        # Get water level
+        var water_level = water_system.get_water_level()
+
+        # Get chunk world position
+        var chunk_size = water_system.get_chunk_size()
+        var world_pos_x = chunk_pos.x * chunk_size
+        var world_pos_z = chunk_pos.y * chunk_size
+
+        # Only spawn fish with random chance
+        if randf() > fish_spawn_chance:
+                fish_chunks[chunk_pos] = []  # Mark as processed but empty
+                return 0
+
+        # Track fish in this chunk
+        fish_chunks[chunk_pos] = []
+
+        # Determine how many fish to spawn (reduced to avoid overwhelming)
+        var num_fish = randi() % max_fish_per_chunk + 1
+        var spawn_requests = []
+
+        # Gather spawn positions for deferred instancing
+        for i in range(num_fish):
+                # Choose a spawn position within the chunk
+                var spawn_x = randf_range(world_pos_x, world_pos_x + chunk_size)
+                var spawn_z = randf_range(world_pos_z, world_pos_z + chunk_size)
+
+                # Set depth below water level
+                var spawn_y = water_level - randf_range(min_fish_depth, max_fish_depth)
+
+                spawn_requests.append({
+                        "chunk_pos": chunk_pos,
+                        "position": Vector3(spawn_x, spawn_y, spawn_z)
+                })
+
+        if spawn_requests.size() > 0:
+                _pending_fish_spawns.append_array(spawn_requests)
+
+        return spawn_requests.size()
+
+func process_pending_spawns():
+        var spawned_this_frame = 0
+        var spawn_limit = max(1, max_spawns_per_frame)
+
+        while spawned_this_frame < spawn_limit and _pending_fish_spawns.size() > 0:
+                var request = _pending_fish_spawns.pop_front()
+
+                if request == null:
+                        continue
+
+                var chunk_pos: Vector2 = request.get("chunk_pos", Vector2.ZERO)
+                var position: Vector3 = request.get("position", Vector3.ZERO)
+
+                var fish = create_fish(position)
+                if fish == null:
+                        continue
+
+                fish_parent.add_child(fish)
+                if fish_chunks.has(chunk_pos):
+                        fish_chunks[chunk_pos].append(fish)
+                else:
+                        fish_chunks[chunk_pos] = [fish]
+
+                active_fish.append(fish)
+                total_fish_created += 1
+                spawned_this_frame += 1
+
+        if spawned_this_frame > 0:
+                print("Spawned ", spawned_this_frame, " fish (deferred)")
 
 # Create a fish with all components
 func create_fish(position: Vector3) -> Node3D:
@@ -177,12 +213,15 @@ func create_simple_fish_mesh() -> MeshInstance3D:
 
 # Update behaviors for all active fish
 func update_fish_behaviors():
-	var fish_to_remove = []
-	
-	for fish in active_fish:
-		if not is_instance_valid(fish):
-			fish_to_remove.append(fish)
-			continue
+        var fish_to_remove = []
+        var player = get_node_or_null("/root/TerrainGenerator/Player")
+        var water_level = water_system.get_water_level()
+        var ticks = Time.get_ticks_msec()
+
+        for fish in active_fish:
+                if not is_instance_valid(fish):
+                        fish_to_remove.append(fish)
+                        continue
 		
 		# Get fish metadata
 		var initial_position = fish.get_meta("initial_position")
@@ -195,10 +234,9 @@ func update_fish_behaviors():
 		time_until_new_target -= fish_update_interval
 		
 		# Check if player is nearby to flee
-		var player = get_node_or_null("/root/TerrainGenerator/Player")
-		var player_too_close = false
-		
-		if player and player.global_position.distance_to(fish.global_position) < 3.0:
+                var player_too_close = false
+
+                if player and player.global_position.distance_to(fish.global_position) < 3.0:
 			# Flee from player
 			var flee_direction = fish.global_position - player.global_position
 			flee_direction.y = 0  # Keep at same depth
@@ -234,7 +272,7 @@ func update_fish_behaviors():
 		var velocity = direction * current_speed * speed
 		
 		# Apply small vertical wobble for natural movement
-		velocity.y += sin(Time.get_ticks_msec() / 500.0) * 0.1
+                velocity.y += sin(ticks / 500.0) * 0.1
 		
 		# Apply water flow if applicable
 		if water_system.has_method("get_flow_direction") and water_system.has_method("get_flow_strength"):
@@ -258,9 +296,8 @@ func update_fish_behaviors():
 			fish.position += velocity * fish_update_interval
 		
 		# Make sure fish stay underwater
-		var water_level = water_system.get_water_level()
-		if fish.position.y > water_level - 0.5:
-			fish.position.y = water_level - 0.5
+                if fish.position.y > water_level - 0.5:
+                        fish.position.y = water_level - 0.5
 	
 	# Remove fish that are no longer valid
 	for fish in fish_to_remove:
@@ -288,20 +325,26 @@ func get_random_position_for_fish(fish: Node3D) -> Vector3:
 
 # Clear all fish in a specific chunk
 func clear_fish_chunk(chunk_pos: Vector2):
-	if not fish_chunks.has(chunk_pos):
-		return
-	
-	# Get all fish in this chunk
-	var fish_list = fish_chunks[chunk_pos]
-	
-	# Remove fish from active list and free them
-	for fish in fish_list:
-		if is_instance_valid(fish):
-			active_fish.erase(fish)
-			fish.queue_free()
-	
-	# Clear chunk from tracking
-	fish_chunks.erase(chunk_pos)
+        if not fish_chunks.has(chunk_pos):
+                return
+
+        # Get all fish in this chunk
+        var fish_list = fish_chunks[chunk_pos]
+
+        # Remove fish from active list and free them
+        for fish in fish_list:
+                if is_instance_valid(fish):
+                        active_fish.erase(fish)
+                        fish.queue_free()
+
+        # Clear chunk from tracking
+        fish_chunks.erase(chunk_pos)
+
+        # Remove any pending spawn requests for this chunk
+        for i in range(_pending_fish_spawns.size() - 1, -1, -1):
+                var request = _pending_fish_spawns[i]
+                if request.get("chunk_pos", Vector2.ZERO) == chunk_pos:
+                        _pending_fish_spawns.remove_at(i)
 
 # Add random jumping fish behavior
 func make_fish_jump():
