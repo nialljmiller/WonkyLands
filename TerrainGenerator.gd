@@ -225,20 +225,21 @@ func generate_terrain_chunk(chunk_pos: Vector2):
 			# Add vertex (in local chunk coordinates)
 			surface_tool.add_vertex(Vector3(x, y, z))
 	
-	# Generate triangles
-	for z in range(chunk_size):
-		for x in range(chunk_size):
-			var i = z * (chunk_size + 1) + x
-			
-			# First triangle
-			surface_tool.add_index(i)
-			surface_tool.add_index(i + 1)
-			surface_tool.add_index(i + (chunk_size + 1))
-			
-			# Second triangle
-			surface_tool.add_index(i + 1)
-			surface_tool.add_index(i + (chunk_size + 1) + 1)
-			surface_tool.add_index(i + (chunk_size + 1))
+        # Generate triangles
+        surface_tool.index()
+        for z in range(chunk_size):
+                for x in range(chunk_size):
+                        var i = z * (chunk_size + 1) + x
+
+                        # First triangle
+                        surface_tool.add_index(i)
+                        surface_tool.add_index(i + 1)
+                        surface_tool.add_index(i + (chunk_size + 1))
+
+                        # Second triangle
+                        surface_tool.add_index(i + 1)
+                        surface_tool.add_index(i + (chunk_size + 1) + 1)
+                        surface_tool.add_index(i + (chunk_size + 1))
 	
 	# Finalize mesh
 	surface_tool.generate_normals()
