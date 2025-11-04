@@ -70,20 +70,20 @@ func _ready():
 	# Add player to scene
 	add_player_to_scene()
 	
-        # Generate initial terrain chunks BEFORE tree system
-        var initial_position = Vector3.ZERO
-        if has_node("Player"):
-                initial_position = $Player.global_position
-        update_terrain_chunks(initial_position)
+	# Generate initial terrain chunks BEFORE tree system
+	var initial_position = Vector3.ZERO
+	if has_node("Player"):
+		initial_position = $Player.global_position
+	update_terrain_chunks(initial_position)
 
-        if enable_plane:
-                var plane_timer = Timer.new()
-                plane_timer.one_shot = true
-                plane_timer.wait_time = 0.2
-                plane_timer.autostart = true
-                add_child(plane_timer)
-                plane_timer.timeout.connect(func(): add_plane_to_scene())
-	
+	if enable_plane:
+		var plane_timer = Timer.new()
+		plane_timer.one_shot = true
+		plane_timer.wait_time = 0.2
+		plane_timer.autostart = true
+		add_child(plane_timer)
+		plane_timer.timeout.connect(func(): add_plane_to_scene())
+
 	# Initialize tree system AFTER terrain is generated
 	if enable_trees:
 		# Create a timer to delay tree system initialization
@@ -136,52 +136,52 @@ func initialize_tree_system():
 		var player_pos = Vector3.ZERO
 		if has_node("Player"):
 			player_pos = $Player.global_position
-                tree_system.update_tree_chunks(player_pos, view_distance, chunk_size)
+			tree_system.update_tree_chunks(player_pos, view_distance, chunk_size)
 
 func add_plane_to_scene():
-        if not enable_plane:
-                return
+	if not enable_plane:
+		return
 
-        if has_node("BushPlane"):
-                return
+	if has_node("BushPlane"):
+		return
 
-        var plane_packed = load("res://Plane.tscn")
-        if not plane_packed:
-                return
+	var plane_packed = load("res://Plane.tscn")
+	if not plane_packed:
+		return
 
-        var plane = plane_packed.instantiate()
-        plane.name = "BushPlane"
+	var plane = plane_packed.instantiate()
+	plane.name = "BushPlane"
 
-        var spawn_origin = Vector3.ZERO
-        if has_node("Player"):
-                spawn_origin = $Player.global_position + plane_spawn_offset
-        else:
-                spawn_origin = plane_spawn_offset
+	var spawn_origin = Vector3.ZERO
+	if has_node("Player"):
+		spawn_origin = $Player.global_position + plane_spawn_offset
+	else:
+		spawn_origin = plane_spawn_offset
 
-        var spawn_height = get_ground_height(spawn_origin)
-        if spawn_height != null:
-                spawn_origin.y = spawn_height + 1.5
-        else:
-                spawn_origin.y = max(water_level + 2.0, 5.0)
+	var spawn_height = get_ground_height(spawn_origin)
+	if spawn_height != null:
+		spawn_origin.y = spawn_height + 1.5
+	else:
+		spawn_origin.y = max(water_level + 2.0, 5.0)
 
-        plane.global_transform = Transform3D(Basis.IDENTITY, spawn_origin)
-        add_child(plane)
+	plane.global_transform = Transform3D(Basis.IDENTITY, spawn_origin)
+	add_child(plane)
 
 func get_ground_height(position: Vector3):
-        if not is_inside_tree():
-                return null
+	if not is_inside_tree():
+		return null
 
-        var space_state = get_world_3d().direct_space_state
-        if not space_state:
-                return null
+	var space_state = get_world_3d().direct_space_state
+	if not space_state:
+		return null
 
-        var from = position + Vector3.UP * 500.0
-        var to = position - Vector3.UP * 500.0
-        var query = PhysicsRayQueryParameters3D.create(from, to)
-        var result = space_state.intersect_ray(query)
-        if result.is_empty():
-                return null
-        return result.position.y
+	var from = position + Vector3.UP * 500.0
+	var to = position - Vector3.UP * 500.0
+	var query = PhysicsRayQueryParameters3D.create(from, to)
+	var result = space_state.intersect_ray(query)
+	if result.is_empty():
+		return null
+	return result.position.y
 
 # Initialize astronomical system
 func initialize_astronomical_system():

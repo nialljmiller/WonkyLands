@@ -49,34 +49,34 @@ var disabled_colliders: Array[CollisionShape3D] = []
 @onready var entry_area: Area3D = $EntryArea
 
 func _ready():
-        camera_mount = $CameraMount
-        seat_marker = $Seat
-        propeller = $Propeller
+		camera_mount = $CameraMount
+		seat_marker = $Seat
+		propeller = $Propeller
 
-        entry_area.body_entered.connect(_on_entry_body_entered)
-        entry_area.body_exited.connect(_on_entry_body_exited)
+		entry_area.body_entered.connect(_on_entry_body_entered)
+		entry_area.body_exited.connect(_on_entry_body_exited)
 
 func _physics_process(delta):
-        _update_propeller(delta)
+		_update_propeller(delta)
 
-        if controlling_player:
-                _attach_player_to_seat()
-                _handle_flight_input(delta)
-                _apply_flight_physics(delta)
+		if controlling_player:
+				_attach_player_to_seat()
+				_handle_flight_input(delta)
+				_apply_flight_physics(delta)
 
-                if Input.is_action_just_pressed("interact"):
-                        exit_plane()
-        else:
-                _apply_idle_physics(delta)
+				if Input.is_action_just_pressed("interact"):
+						exit_plane()
+		else:
+				_apply_idle_physics(delta)
 
-                if nearby_player and Input.is_action_just_pressed("interact"):
-                        enter_plane(nearby_player)
+				if nearby_player and Input.is_action_just_pressed("interact"):
+						enter_plane(nearby_player)
 
-        move_and_slide()
+		move_and_slide()
 
 func _handle_flight_input(delta):
-        var throttle_input = Input.get_action_strength("plane_throttle_up") - Input.get_action_strength("plane_throttle_down")
-        throttle = clamp(throttle + throttle_input * throttle_response * delta, 0.0, 1.0)
+		var throttle_input = Input.get_action_strength("plane_throttle_up") - Input.get_action_strength("plane_throttle_down")
+		throttle = clamp(throttle + throttle_input * throttle_response * delta, 0.0, 1.0)
 
         input_pitch = Input.get_action_strength("plane_pitch_down") - Input.get_action_strength("plane_pitch_up")
         input_yaw = Input.get_action_strength("plane_yaw_right") - Input.get_action_strength("plane_yaw_left")
@@ -171,8 +171,8 @@ func _apply_flight_physics(delta):
         rotate_object_local(Vector3.FORWARD, angular_velocity.z * delta)
 
 func _apply_idle_physics(delta):
-        throttle = lerp(throttle, 0.0, delta * 1.5)
-        current_speed = lerp(current_speed, 0.0, delta * 1.2)
+		throttle = lerp(throttle, 0.0, delta * 1.5)
+		current_speed = lerp(current_speed, 0.0, delta * 1.2)
 
         angular_velocity = angular_velocity.lerp(Vector3.ZERO, delta * 2.0)
 
@@ -180,7 +180,9 @@ func _apply_idle_physics(delta):
         if not is_on_floor():
                 target_velocity.y = velocity.y - idle_gravity_force * delta
 
-        velocity = velocity.lerp(target_velocity, delta * 3.0)
+		var target_velocity = Vector3.ZERO
+		if not is_on_floor():
+				target_velocity.y = velocity.y - idle_gravity_force * delta
 
         if is_on_floor():
                 var euler = rotation_degrees
@@ -189,23 +191,20 @@ func _apply_idle_physics(delta):
                 rotation_degrees = euler
 
 func _update_propeller(delta):
-        if propeller:
-                var spin_speed = lerp(3.0, 40.0, throttle)
-                propeller.rotate_z(spin_speed * delta)
+		if propeller:
+				var spin_speed = lerp(3.0, 40.0, throttle)
+				propeller.rotate_z(spin_speed * delta)
 
 func _attach_player_to_seat():
-        if not controlling_player:
-                return
+		if not controlling_player:
+				return
 
-        controlling_player.global_transform = seat_marker.global_transform
-        controlling_player.velocity = Vector3.ZERO
+		controlling_player.global_transform = seat_marker.global_transform
+		controlling_player.velocity = Vector3.ZERO
 
 func enter_plane(player: CharacterBody3D):
-        if controlling_player:
-                return
-
-        controlling_player = player
-        nearby_player = null
+		if controlling_player:
+				return
 
         input_pitch = 0.0
         input_yaw = 0.0
@@ -215,40 +214,42 @@ func enter_plane(player: CharacterBody3D):
         if controlling_player.has_method("set_control_enabled"):
                 controlling_player.set_control_enabled(false)
 
-        stored_player_visibility = controlling_player.visible
-        controlling_player.visible = false
+		input_pitch = 0.0
+		input_yaw = 0.0
+		input_roll = 0.0
+		angular_velocity = Vector3.ZERO
 
-        stored_process_input = controlling_player.is_processing_input()
-        stored_process_physics = controlling_player.is_physics_processing()
-        controlling_player.set_process_input(false)
-        controlling_player.set_physics_process(false)
+		if controlling_player.has_method("set_control_enabled"):
+				controlling_player.set_control_enabled(false)
 
-        disabled_colliders.clear()
-        for child in controlling_player.get_children():
-                if child is CollisionShape3D:
-                        var collider: CollisionShape3D = child
-                        collider.disabled = true
-                        disabled_colliders.append(collider)
+		stored_player_visibility = controlling_player.visible
+		controlling_player.visible = false
 
-        _attach_player_to_seat()
+		stored_process_input = controlling_player.is_processing_input()
+		stored_process_physics = controlling_player.is_physics_processing()
+		controlling_player.set_process_input(false)
+		controlling_player.set_physics_process(false)
 
-        var camera = controlling_player.get_node_or_null("Camera3D")
-        if camera:
-                original_camera_parent = camera.get_parent()
-                original_camera_transform = camera.transform
-                camera.get_parent().remove_child(camera)
-                camera_mount.add_child(camera)
-                camera.transform = Transform3D.IDENTITY
-                camera.position = Vector3(0, 0.6, 0)
-                camera.rotation_degrees = Vector3(-5, 0, 0)
+		disabled_colliders.clear()
+		for child in controlling_player.get_children():
+				if child is CollisionShape3D:
+						var collider: CollisionShape3D = child
+						collider.disabled = true
+						disabled_colliders.append(collider)
 
-        Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		_attach_player_to_seat()
 
-func exit_plane():
-        if not controlling_player:
-                return
+		var camera = controlling_player.get_node_or_null("Camera3D")
+		if camera:
+				original_camera_parent = camera.get_parent()
+				original_camera_transform = camera.transform
+				camera.get_parent().remove_child(camera)
+				camera_mount.add_child(camera)
+				camera.transform = Transform3D.IDENTITY
+				camera.position = Vector3(0, 0.6, 0)
+				camera.rotation_degrees = Vector3(-5, 0, 0)
 
-        var player = controlling_player
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
         var camera = camera_mount.get_node_or_null("Camera3D")
         if camera and original_camera_parent:
@@ -285,13 +286,13 @@ func exit_plane():
         Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _on_entry_body_entered(body):
-        if body.name == "Player" and body is CharacterBody3D and body != controlling_player:
-                nearby_player = body
+		if body.name == "Player" and body is CharacterBody3D and body != controlling_player:
+				nearby_player = body
 
 func _on_entry_body_exited(body):
-        if body == nearby_player:
-                nearby_player = null
+		if body == nearby_player:
+				nearby_player = null
 
 func lerp_angle(from_angle: float, to_angle: float, weight: float) -> float:
-        var difference = wrapf((to_angle - from_angle), -180.0, 180.0)
-        return from_angle + difference * clamp(weight, 0.0, 1.0)
+		var difference = wrapf((to_angle - from_angle), -180.0, 180.0)
+		return from_angle + difference * clamp(weight, 0.0, 1.0)
