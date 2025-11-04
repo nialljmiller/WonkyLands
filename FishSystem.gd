@@ -1,62 +1,63 @@
 extends Node3D
-
 class_name FishSystem
 
 # Fish population settings
 @export var max_fish_per_chunk: int = 8
-@export var fish_spawn_chance: float = 0.8  # Higher chance to make sure fish spawn
-@export var min_fish_depth: float = 0.5  # Min depth below water
-@export var max_fish_depth: float = 10.0  # Max depth below water
+@export var fish_spawn_chance: float = 0.8
+@export var min_fish_depth: float = 0.5
+@export var max_fish_depth: float = 10.0
 
 # Fish behaviors
-@export var fish_idle_speed: float = 0.8  # Speed when idling
-@export var fish_flee_speed: float = 2.5  # Speed when fleeing
-@export var fish_wander_radius: float = 5.0  # How far fish can wander from spawn point
-@export var fish_update_interval: float = 0.2  # How often to update fish behaviors
+@export var fish_idle_speed: float = 0.8
+@export var fish_flee_speed: float = 2.5
+@export var fish_wander_radius: float = 5.0
+@export var fish_update_interval: float = 0.2
 
-# References
-var water_system = null  # Reference to parent water system
-var active_fish = []  # Active fish in the world
-var fish_chunks = {}  # Tracks which chunks have fish
-
-# Spawn queue to spread out expensive instancing work
+# Spawn throttling
 @export var max_spawns_per_frame: int = 4
-var _pending_fish_spawns: Array = []
 
-# Timer for fish updates
-var update_timer: float = 0.0
+# Refs / state
+var water_system: Node = null
 var fish_parent: Node3D
+var active_fish: Array[CharacterBody3D] = []
+var fish_chunks := {}                      # Dictionary[Vector2, Array]
+var _pending_fish_spawns: Array[Dictionary] = []
 
-# DEBUG - used to count fish instances
-var total_fish_created = 0
-var debug_fish_count_timer = 0.0
+# Timers
+var update_timer: float = 0.0
+var debug_fish_count_timer: float = 0.0
 
-func _ready():
+# DEBUG
+var total_fish_created: int = 0
+
+func _ready() -> void:
 	# Find water system (parent)
 	water_system = get_parent()
 	if not water_system or not water_system.has_method("get_water_level"):
-		push_error("FishSystem requires a parent water system with get_water_level method")
+		push_error("FishSystem requires a parent water system with get_water_level()")
 	
-	# Create a parent node for all fish
+	# Create container
 	fish_parent = Node3D.new()
 	fish_parent.name = "FishParent"
 	add_child(fish_parent)
 	
-	# Debug message
 	print("ImprovedFishSystem initialized")
 
-func _process(delta):
-        # Spawn pending fish gradually to avoid frame spikes
-        if _pending_fish_spawns.size() > 0:
-                process_pending_spawns()
-
-        # Update timer for fish behaviors
-        update_timer += delta
-        if update_timer >= fish_update_interval:
-                update_timer = 0.0
-                update_fish_behaviors()
+func _process(delta: float) -> void:
+	# Spawn queue
+	if _pending_fish_spawns.size() > 0:
+		process_pending_spawns()
 	
-	# Debug fish count
+	# Jump tick (rare)
+	occasional_fish_jumps()
+	
+	# Behavior tick
+	update_timer += delta
+	if update_timer >= fish_update_interval:
+		update_timer = 0.0
+		update_fish_behaviors()
+	
+	# Debug counter
 	debug_fish_count_timer += delta
 	if debug_fish_count_timer >= 3.0:
 		debug_fish_count_timer = 0.0
@@ -64,386 +65,316 @@ func _process(delta):
 
 # Spawn fish in a specific water chunk
 func spawn_fish_in_chunk(chunk_pos: Vector2, _water_chunk_node: Node3D) -> int:
-        # Skip if we already spawned fish in this chunk
-        if fish_chunks.has(chunk_pos):
-                return 0
+	# Already processed?
+	if fish_chunks.has(chunk_pos):
+		return 0
+	
+	var water_level: float = water_system.get_water_level()
+	var chunk_size: float = water_system.get_chunk_size()
+	var world_pos_x: float = chunk_pos.x * chunk_size
+	var world_pos_z: float = chunk_pos.y * chunk_size
+	
+	# Random chance to skip
+	if randf() > fish_spawn_chance:
+		fish_chunks[chunk_pos] = []  # mark empty but processed
+		return 0
+	
+	fish_chunks[chunk_pos] = []
+	
+	var num_fish: int = randi() % max_fish_per_chunk + 1
+	var spawn_requests: Array[Dictionary] = []
+	
+	for i in range(num_fish):
+		var spawn_x: float = randf_range(world_pos_x, world_pos_x + chunk_size)
+		var spawn_z: float = randf_range(world_pos_z, world_pos_z + chunk_size)
+		var spawn_y: float = water_level - randf_range(min_fish_depth, max_fish_depth)
+		spawn_requests.append({
+			"chunk_pos": chunk_pos,
+			"position": Vector3(spawn_x, spawn_y, spawn_z)
+		})
+	
+	if spawn_requests.size() > 0:
+		_pending_fish_spawns.append_array(spawn_requests)
+	
+	return spawn_requests.size()
 
-        # Get water level
-        var water_level = water_system.get_water_level()
+func process_pending_spawns() -> void:
+	var spawned_this_frame: int = 0
+	var spawn_limit: int = max(1, max_spawns_per_frame)
+	
+	while spawned_this_frame < spawn_limit and _pending_fish_spawns.size() > 0:
+		var request: Dictionary = _pending_fish_spawns.pop_front()
+		if request == null:
+			continue
+		
+		var chunk_pos: Vector2 = request.get("chunk_pos", Vector2.ZERO)
+		var position: Vector3 = request.get("position", Vector3.ZERO)
+		
+		var fish: CharacterBody3D = create_fish(position)
+		if fish == null:
+			continue
+		
+		fish_parent.add_child(fish)
+		
+		if fish_chunks.has(chunk_pos):
+			fish_chunks[chunk_pos].append(fish)
+		else:
+			fish_chunks[chunk_pos] = [fish]
+		
+		active_fish.append(fish)
+		total_fish_created += 1
+		spawned_this_frame += 1
+	
+	if spawned_this_frame > 0:
+		print("Spawned ", spawned_this_frame, " fish (deferred)")
 
-        # Get chunk world position
-        var chunk_size = water_system.get_chunk_size()
-        var world_pos_x = chunk_pos.x * chunk_size
-        var world_pos_z = chunk_pos.y * chunk_size
-
-        # Only spawn fish with random chance
-        if randf() > fish_spawn_chance:
-                fish_chunks[chunk_pos] = []  # Mark as processed but empty
-                return 0
-
-        # Track fish in this chunk
-        fish_chunks[chunk_pos] = []
-
-        # Determine how many fish to spawn (reduced to avoid overwhelming)
-        var num_fish = randi() % max_fish_per_chunk + 1
-        var spawn_requests = []
-
-        # Gather spawn positions for deferred instancing
-        for i in range(num_fish):
-                # Choose a spawn position within the chunk
-                var spawn_x = randf_range(world_pos_x, world_pos_x + chunk_size)
-                var spawn_z = randf_range(world_pos_z, world_pos_z + chunk_size)
-
-                # Set depth below water level
-                var spawn_y = water_level - randf_range(min_fish_depth, max_fish_depth)
-
-                spawn_requests.append({
-                        "chunk_pos": chunk_pos,
-                        "position": Vector3(spawn_x, spawn_y, spawn_z)
-                })
-
-        if spawn_requests.size() > 0:
-                _pending_fish_spawns.append_array(spawn_requests)
-
-        return spawn_requests.size()
-
-func process_pending_spawns():
-        var spawned_this_frame = 0
-        var spawn_limit = max(1, max_spawns_per_frame)
-
-        while spawned_this_frame < spawn_limit and _pending_fish_spawns.size() > 0:
-                var request = _pending_fish_spawns.pop_front()
-
-                if request == null:
-                        continue
-
-                var chunk_pos: Vector2 = request.get("chunk_pos", Vector2.ZERO)
-                var position: Vector3 = request.get("position", Vector3.ZERO)
-
-                var fish = create_fish(position)
-                if fish == null:
-                        continue
-
-                fish_parent.add_child(fish)
-                if fish_chunks.has(chunk_pos):
-                        fish_chunks[chunk_pos].append(fish)
-                else:
-                        fish_chunks[chunk_pos] = [fish]
-
-                active_fish.append(fish)
-                total_fish_created += 1
-                spawned_this_frame += 1
-
-        if spawned_this_frame > 0:
-                print("Spawned ", spawned_this_frame, " fish (deferred)")
-
-# Create a fish with all components
-func create_fish(position: Vector3) -> Node3D:
-	# Create base fish node
-	var fish = CharacterBody3D.new()
+# Create a fish instance
+func create_fish(position: Vector3) -> CharacterBody3D:
+	var fish: CharacterBody3D = CharacterBody3D.new()
 	fish.name = "Fish"
 	fish.position = position
 	
-	# Store initial position and fish type
+	# Meta
 	fish.set_meta("initial_position", position)
 	fish.set_meta("speed", randf_range(0.8, 1.5))
 	fish.set_meta("target_position", position)
 	fish.set_meta("time_until_new_target", randf_range(3.0, 8.0))
 	fish.set_meta("is_fleeing", false)
+	fish.set_meta("is_jumping", false)
+	fish.set_meta("jump_progress", 0.0)
 	
-	# Create a simple fish mesh
-	var mesh_instance = create_simple_fish_mesh()
+	# Visuals
+	var mesh_instance: MeshInstance3D = create_simple_fish_mesh()
 	fish.add_child(mesh_instance)
 	
-	# Add collision shape
-	var collision = CollisionShape3D.new()
-	var capsule = CapsuleShape3D.new()
+	# Collision
+	var collision: CollisionShape3D = CollisionShape3D.new()
+	var capsule: CapsuleShape3D = CapsuleShape3D.new()
 	capsule.radius = 0.2
 	capsule.height = 0.6
 	collision.shape = capsule
-	collision.rotation_degrees.z = 90  # Orient along fish forward direction
+	collision.rotation_degrees.z = 90
 	fish.add_child(collision)
 	
-	# Randomize initial rotation
-	fish.rotation.y = randf_range(0, TAU)
+	# Orientation
+	fish.rotation.y = randf_range(0.0, TAU)
 	
 	return fish
 
-# Create a simple colorful fish mesh
+# Simple colorful fish mesh
 func create_simple_fish_mesh() -> MeshInstance3D:
-	var fish_body = MeshInstance3D.new()
+	var fish_body: MeshInstance3D = MeshInstance3D.new()
 	fish_body.name = "FishMesh"
 	
-	# Create body
-	var body_mesh = PrismMesh.new()
+	var body_mesh: PrismMesh = PrismMesh.new()
 	body_mesh.size = Vector3(0.4, 0.15, 0.08)
 	fish_body.mesh = body_mesh
 	
-	# Create material with random colorful fish
-	var material = StandardMaterial3D.new()
-	
-	# Generate a bright, saturated color
-	var hue = randf_range(0.0, 1.0)
-	var fish_color = Color.from_hsv(hue, 0.8, 0.9)
-	
+	var material: StandardMaterial3D = StandardMaterial3D.new()
+	var hue: float = randf_range(0.0, 1.0)
+	var fish_color: Color = Color.from_hsv(hue, 0.8, 0.9)
 	material.albedo_color = fish_color
 	material.metallic = 0.7
 	material.roughness = 0.2
 	fish_body.material_override = material
 	
-	# Add tail fin
-	var tail_fin = MeshInstance3D.new()
+	var tail_fin: MeshInstance3D = MeshInstance3D.new()
 	tail_fin.name = "TailFin"
-	
-	var tail_mesh = PrismMesh.new()
+	var tail_mesh: PrismMesh = PrismMesh.new()
 	tail_mesh.size = Vector3(0.2, 0.12, 0.04)
 	tail_fin.mesh = tail_mesh
-	
-	# Position tail behind body
 	tail_fin.position = Vector3(-0.3, 0, 0)
 	tail_fin.material_override = material
-	
-	# Add to fish body
 	fish_body.add_child(tail_fin)
 	
-	# Rotate to face forward direction
 	fish_body.rotation_degrees.y = 90
-	
 	return fish_body
 
-# Update behaviors for all active fish
-func update_fish_behaviors():
-        var fish_to_remove = []
-        var player = get_node_or_null("/root/TerrainGenerator/Player")
-        var water_level = water_system.get_water_level()
-        var ticks = Time.get_ticks_msec()
-
-        for fish in active_fish:
-                if not is_instance_valid(fish):
-                        fish_to_remove.append(fish)
-                        continue
+# Behavior update
+func update_fish_behaviors() -> void:
+	var player: Node3D = get_node_or_null("/root/TerrainGenerator/Player")
+	var water_level: float = water_system.get_water_level()
+	var ticks: int = Time.get_ticks_msec()
+	var fish_to_remove: Array[CharacterBody3D] = []
+	
+	for fish in active_fish:
+		if not is_instance_valid(fish):
+			fish_to_remove.append(fish)
+			continue
 		
-		# Get fish metadata
-		var initial_position = fish.get_meta("initial_position")
-		var speed = fish.get_meta("speed")
-		var target_position = fish.get_meta("target_position")
-		var time_until_new_target = fish.get_meta("time_until_new_target")
-		var is_fleeing = fish.get_meta("is_fleeing")
+		# Jumping overrides normal swim
+		if fish.get_meta("is_jumping"):
+			continue_fish_jump(fish, fish_update_interval)
+			continue
 		
-		# Reduce timer for changing target
+		var initial_position: Vector3 = fish.get_meta("initial_position")
+		var speed: float = fish.get_meta("speed")
+		var target_position: Vector3 = fish.get_meta("target_position")
+		var time_until_new_target: float = fish.get_meta("time_until_new_target")
+		var is_fleeing: bool = fish.get_meta("is_fleeing")
+		
 		time_until_new_target -= fish_update_interval
 		
-		# Check if player is nearby to flee
-                var player_too_close = false
-
-                if player and player.global_position.distance_to(fish.global_position) < 3.0:
-			# Flee from player
-			var flee_direction = fish.global_position - player.global_position
-			flee_direction.y = 0  # Keep at same depth
+		# Player proximity → flee
+		var player_too_close: bool = false
+		if player and player.global_position.distance_to(fish.global_position) < 3.0:
+			var flee_direction: Vector3 = (fish.global_position - player.global_position)
+			flee_direction.y = 0.0
 			flee_direction = flee_direction.normalized()
-			
-			target_position = fish.global_position + flee_direction * fish_wander_radius * 2
+			target_position = fish.global_position + flee_direction * fish_wander_radius * 2.0
 			player_too_close = true
 			is_fleeing = true
-		elif time_until_new_target <= 0 and !player_too_close:
-			# Time to choose a new target
+		elif time_until_new_target <= 0.0 and not player_too_close:
 			target_position = get_random_position_for_fish(fish)
 			time_until_new_target = randf_range(3.0, 8.0)
 			is_fleeing = false
 		
-		# Update fish metadata
+		# Save meta back
 		fish.set_meta("target_position", target_position)
 		fish.set_meta("time_until_new_target", time_until_new_target)
 		fish.set_meta("is_fleeing", is_fleeing)
 		
-		# Calculate direction to target
-		var direction = (target_position - fish.global_position).normalized()
-		
-		# Calculate target rotation (fish looks in movement direction)
-		var target_angle = atan2(direction.x, direction.z)
-		
-		# Smoothly interpolate current rotation to target rotation
-		var current_angle = fish.rotation.y
-		var angle_diff = fposmod(target_angle - current_angle + PI, TAU) - PI
+		# Steering
+		var direction: Vector3 = (target_position - fish.global_position).normalized()
+		var target_angle: float = atan2(direction.x, direction.z)
+		var current_angle: float = fish.rotation.y
+		var angle_diff: float = fposmod(target_angle - current_angle + PI, TAU) - PI
 		fish.rotation.y += angle_diff * 2.0 * fish_update_interval
 		
-		# Move fish towards target
-		var current_speed = fish_flee_speed if is_fleeing else fish_idle_speed
-		var velocity = direction * current_speed * speed
+		# Velocity
+		var base_speed: float = fish_flee_speed if is_fleeing else fish_idle_speed
+		var velocity: Vector3 = direction * base_speed * speed
 		
-		# Apply small vertical wobble for natural movement
-                velocity.y += sin(ticks / 500.0) * 0.1
+		# Subtle vertical wobble
+		velocity.y += sin(float(ticks) / 500.0) * 0.1
 		
-		# Apply water flow if applicable
+		# Water flow
 		if water_system.has_method("get_flow_direction") and water_system.has_method("get_flow_strength"):
-			var flow_direction = water_system.get_flow_direction()
-			var flow_strength = water_system.get_flow_strength()
-			velocity += flow_direction * flow_strength * 0.3  # Fish partially resist flow
+			var flow_direction: Vector3 = water_system.get_flow_direction()
+			var flow_strength: float = water_system.get_flow_strength()
+			velocity += flow_direction * flow_strength * 0.3
 		
-		# Set fish velocity
-		fish.velocity = velocity
-		
-		# Move the fish
-		# First check for walls or obstacles
-		var collision = fish.move_and_collide(velocity * fish_update_interval, true)
-		if collision:
-			# If we would hit something, change direction
-			var reflection = velocity.bounce(collision.get_normal())
-			fish.velocity = reflection
-			fish.set_meta("target_position", fish.global_position + reflection.normalized() * 5.0)
-		else:
-			# No collision, proceed with movement
+		# Collision-aware move
+		var xf: Transform3D = fish.global_transform
+		var will_collide: bool = fish.test_move(xf, velocity * fish_update_interval)
+		if not will_collide:
 			fish.position += velocity * fish_update_interval
+		else:
+			var reflection: Vector3 = velocity.bounce(Vector3.UP) # fallback normal
+			fish.set_meta("target_position", fish.global_position + reflection.normalized() * 5.0)
 		
-		# Make sure fish stay underwater
-                if fish.position.y > water_level - 0.5:
-                        fish.position.y = water_level - 0.5
+		# Keep underwater
+		if fish.position.y > water_level - 0.5:
+			fish.position.y = water_level - 0.5
 	
-	# Remove fish that are no longer valid
-	for fish in fish_to_remove:
-		active_fish.erase(fish)
+	# purge invalids AFTER the loop
+	for dead in fish_to_remove:
+		active_fish.erase(dead)
 
-# Generate a random position for a fish to swim to
+# Random swim target near initial position
 func get_random_position_for_fish(fish: Node3D) -> Vector3:
-	var initial_position = fish.get_meta("initial_position")
-	
-	# Generate a random position within wander radius
-	var random_offset = Vector3(
+	var initial_position: Vector3 = fish.get_meta("initial_position")
+	var random_offset: Vector3 = Vector3(
 		randf_range(-fish_wander_radius, fish_wander_radius),
-		randf_range(-fish_wander_radius/2, fish_wander_radius/2),
+		randf_range(-fish_wander_radius * 0.5, fish_wander_radius * 0.5),
 		randf_range(-fish_wander_radius, fish_wander_radius)
 	)
+	var target: Vector3 = initial_position + random_offset
 	
-	var target = initial_position + random_offset
-	
-	# Make sure target is below water level
 	if water_system.has_method("get_water_level"):
-		var water_level = water_system.get_water_level()
-		target.y = min(target.y, water_level - 0.5)  # Keep at least 0.5 units below water
+		var water_level: float = water_system.get_water_level()
+		target.y = min(target.y, water_level - 0.5)
 	
 	return target
 
 # Clear all fish in a specific chunk
-func clear_fish_chunk(chunk_pos: Vector2):
-        if not fish_chunks.has(chunk_pos):
-                return
-
-        # Get all fish in this chunk
-        var fish_list = fish_chunks[chunk_pos]
-
-        # Remove fish from active list and free them
-        for fish in fish_list:
-                if is_instance_valid(fish):
-                        active_fish.erase(fish)
-                        fish.queue_free()
-
-        # Clear chunk from tracking
-        fish_chunks.erase(chunk_pos)
-
-        # Remove any pending spawn requests for this chunk
-        for i in range(_pending_fish_spawns.size() - 1, -1, -1):
-                var request = _pending_fish_spawns[i]
-                if request.get("chunk_pos", Vector2.ZERO) == chunk_pos:
-                        _pending_fish_spawns.remove_at(i)
-
-# Add random jumping fish behavior
-func make_fish_jump():
-	# Find a random fish near the surface to make jump
-	var candidates = []
-	var water_level = water_system.get_water_level()
+func clear_fish_chunk(chunk_pos: Vector2) -> void:
+	if not fish_chunks.has(chunk_pos):
+		return
 	
+	var fish_list: Array = fish_chunks[chunk_pos]
+	for fish in fish_list:
+		if is_instance_valid(fish):
+			active_fish.erase(fish)
+			fish.queue_free()
+	
+	fish_chunks.erase(chunk_pos)
+	
+	# Remove pending spawns for this chunk
+	for i in range(_pending_fish_spawns.size() - 1, -1, -1):
+		var request: Dictionary = _pending_fish_spawns[i]
+		if request.get("chunk_pos", Vector2.ZERO) == chunk_pos:
+			_pending_fish_spawns.remove_at(i)
+
+# ————— Jumping fish —————
+
+func make_fish_jump() -> void:
+	var candidates: Array[CharacterBody3D] = []
+	var water_level: float = water_system.get_water_level()
 	for fish in active_fish:
-		if is_instance_valid(fish) and fish.position.y > water_level - 2.0:
+		if is_instance_valid(fish) and fish.position.y > water_level - 2.0 and not fish.get_meta("is_jumping"):
 			candidates.append(fish)
-	
 	if candidates.size() > 0:
-		var fish = candidates[randi() % candidates.size()]
+		var fish: CharacterBody3D = candidates[randi() % candidates.size()]
 		start_fish_jump(fish)
 
-# Start a jumping animation for a fish
-func start_fish_jump(fish: Node3D):
-	# Only start jump if not already jumping
+func start_fish_jump(fish: Node3D) -> void:
 	if fish.has_meta("is_jumping") and fish.get_meta("is_jumping"):
 		return
 	
-	# Set jumping state
 	fish.set_meta("is_jumping", true)
 	fish.set_meta("jump_progress", 0.0)
 	
-	# Get water level
-	var water_level = water_system.get_water_level()
-	
-	# Store jump start position
+	var water_level: float = water_system.get_water_level()
 	fish.set_meta("jump_start", fish.global_position)
 	
-	# Calculate random jump arc
-	var jump_direction = Vector3(randf_range(-1, 1), 0, randf_range(-1, 1)).normalized()
-	var jump_distance = randf_range(1.0, 3.0)
-	var jump_height = randf_range(1.0, 3.0)
-	var jump_duration = randf_range(0.8, 1.5)
+	var jump_direction: Vector3 = Vector3(randf_range(-1, 1), 0, randf_range(-1, 1)).normalized()
+	var jump_distance: float = randf_range(1.0, 3.0)
+	var jump_height: float = randf_range(1.0, 3.0)
+	var jump_duration: float = randf_range(0.8, 1.5)
 	
-	# Calculate jump end position (back under water)
-	var jump_end = fish.global_position + jump_direction * jump_distance
-	jump_end.y = water_level - randf_range(0.5, 1.5)  # End below water
+	var jump_end: Vector3 = fish.global_position + jump_direction * jump_distance
+	jump_end.y = water_level - randf_range(0.5, 1.5)
 	
-	# Store jump parameters
 	fish.set_meta("jump_end", jump_end)
 	fish.set_meta("jump_height", jump_height)
 	fish.set_meta("jump_duration", jump_duration)
 	
-	# Create splash effect at jump start
 	if water_system.has_method("create_splash_effect"):
-		var splash_pos = fish.global_position
+		var splash_pos: Vector3 = fish.global_position
 		splash_pos.y = water_level
 		water_system.create_splash_effect(splash_pos, 0.5)
 
-# Continue a jumping animation during updates
-func continue_fish_jump(fish: Node3D, delta: float):
-	# Get jump parameters
-	var jump_start = fish.get_meta("jump_start")
-	var jump_end = fish.get_meta("jump_end")
-	var jump_height = fish.get_meta("jump_height")
-	var jump_duration = fish.get_meta("jump_duration")
-	var jump_progress = fish.get_meta("jump_progress")
+func continue_fish_jump(fish: Node3D, delta: float) -> void:
+	var jump_start: Vector3 = fish.get_meta("jump_start")
+	var jump_end: Vector3 = fish.get_meta("jump_end")
+	var jump_height: float = fish.get_meta("jump_height")
+	var jump_duration: float = fish.get_meta("jump_duration")
+	var jump_progress: float = fish.get_meta("jump_progress")
 	
-	# Update progress
 	jump_progress += delta / jump_duration
 	
-	# Jump completed?
 	if jump_progress >= 1.0:
-		# End jump
 		fish.set_meta("is_jumping", false)
 		fish.global_position = jump_end
-		
-		# Create splash when landing
 		if water_system.has_method("create_splash_effect"):
-			var water_level = water_system.get_water_level()
-			var splash_pos = fish.global_position
+			var water_level: float = water_system.get_water_level()
+			var splash_pos: Vector3 = fish.global_position
 			splash_pos.y = water_level
 			water_system.create_splash_effect(splash_pos, 0.5)
-			
 		return
 	
-	# Calculate position along jump arc
-	var t = jump_progress
-	
-	# Horizontal movement (linear)
-	var horizontal_pos = jump_start.lerp(jump_end, t)
-	
-	# Vertical movement (parabolic)
-	var vertical_offset = jump_height * 4.0 * t * (1.0 - t)  # Parabola with max at t=0.5
-	
-	# Apply position
-	var water_level = water_system.get_water_level()
-	var new_pos = horizontal_pos
-	new_pos.y = water_level + vertical_offset  # Jump above water
+	var t: float = jump_progress
+	var horizontal_pos: Vector3 = jump_start.lerp(jump_end, t)
+	var vertical_offset: float = jump_height * 4.0 * t * (1.0 - t)
+	var water_level: float = water_system.get_water_level()
+	var new_pos: Vector3 = horizontal_pos
+	new_pos.y = water_level + vertical_offset
 	fish.global_position = new_pos
 	
-	# Update progress meta
 	fish.set_meta("jump_progress", jump_progress)
 
-# Trigger some jumping fish every now and then
-func occasional_fish_jumps():
-	# 1% chance per update to make a fish jump
+func occasional_fish_jumps() -> void:
+	# ~1% chance per frame to trigger
 	if randf() < 0.01:
 		make_fish_jump()
