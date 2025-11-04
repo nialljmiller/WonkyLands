@@ -1,9 +1,11 @@
 [gd_scene load_steps=2 format=3 uid="uid://PLACEHOLDER_UID"]
 
-[ext_resource type="Script" path="res://BlueFish.gd" id="1_fish"]
+[ext_resource type="Script" path="res://Fish.gd" id="1_fish"]
 
 [node name="BlueFish" type="CharacterBody3D"]
 script = ExtResource("1_fish")
 fish_color = Color(0.300000, 0.600000, 0.900000, 1)
 fish_size = Vector3(0.400000, 0.150000, 0.080000)
 swim_speed = 1.200000
+wander_radius = 6.000000
+school_distance = 3.000000
