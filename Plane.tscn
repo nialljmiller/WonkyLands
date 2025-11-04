@@ -1,0 +1,82 @@
+[gd_scene load_steps=11 format=3 uid="uid://by66k7wba4bt"]
+
+[ext_resource type="Script" path="res://PlaneController.gd" id="1_x4eim"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_d7l1q"]
+albedo_color = Color(0.82, 0.83, 0.86, 1)
+metallic = 0.1
+roughness = 0.6
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_1ut3p"]
+albedo_color = Color(0.74, 0.1, 0.1, 1)
+metallic = 0.0
+roughness = 0.4
+
+[sub_resource type="BoxMesh" id="BoxMesh_0u8rs"]
+size = Vector3(1.4, 1.2, 5.2)
+
+[sub_resource type="BoxMesh" id="BoxMesh_kg4y0"]
+size = Vector3(8, 0.2, 1.6)
+
+[sub_resource type="BoxMesh" id="BoxMesh_lc8pi"]
+size = Vector3(2.4, 0.25, 1.0)
+
+[sub_resource type="BoxMesh" id="BoxMesh_wpsh4"]
+size = Vector3(0.5, 1.4, 0.3)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_bzujd"]
+bottom_radius = 0.15
+top_radius = 0.15
+height = 0.4
+radial_segments = 12
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_ye1ff"]
+size = Vector3(3.4, 1.4, 5.6)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_v8z7f"]
+size = Vector3(3.5, 2.5, 6.5)
+
+[node name="BushPlane" type="CharacterBody3D"]
+script = ExtResource("1_x4eim")
+floor_snap_length = 1.0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("BoxShape3D_ye1ff")
+
+[node name="Fuselage" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_0u8rs")
+material_override = SubResource("StandardMaterial3D_d7l1q")
+
+[node name="Wing" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_kg4y0")
+material_override = SubResource("StandardMaterial3D_d7l1q")
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.2, -0.2)
+
+[node name="TailPlane" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_lc8pi")
+material_override = SubResource("StandardMaterial3D_d7l1q")
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.65, 2.3)
+
+[node name="TailFin" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_wpsh4")
+material_override = SubResource("StandardMaterial3D_d7l1q")
+transform = Transform3D(1, 0, 0, 0, 0.2, -0.98, 0, 0.98, 0.2, 0, 1.2, 2.1)
+
+[node name="Propeller" type="MeshInstance3D" parent="."]
+mesh = SubResource("CylinderMesh_bzujd")
+material_override = SubResource("StandardMaterial3D_1ut3p")
+transform = Transform3D(0.96, 0, 0.28, 0, 1, 0, -0.28, 0, 0.96, 0, 0.0, -2.9)
+
+[node name="EntryArea" type="Area3D" parent="."]
+monitorable = false
+
+[node name="EntryCollision" type="CollisionShape3D" parent="EntryArea"]
+shape = SubResource("BoxShape3D_v8z7f")
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.8, 0.0, -0.5)
+
+[node name="Seat" type="Marker3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, -0.5)
+
+[node name="CameraMount" type="Marker3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, -1.6)
+

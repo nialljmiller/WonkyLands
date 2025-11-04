@@ -16,13 +16,16 @@ var camera_rotation = Vector2()
 
 # State flags
 var is_swimming = false
+var controls_enabled := true
 
 func _ready():
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _physics_process(delta):
-	# Check if we're in water (set by water system)
-	is_swimming = get_meta("is_swimming", false)
+        if not controls_enabled:
+                return
+        # Check if we're in water (set by water system)
+        is_swimming = get_meta("is_swimming", false)
 	
 	if is_swimming:
 		process_swimming(delta)
@@ -115,9 +118,11 @@ func process_swimming(delta):
 		velocity.y = max(velocity.y, jump_strength / 2)
 
 func _input(event):
-	if event is InputEventMouseMotion:
-		# Fixed: Changed signs to get correct mouse movement
-		camera_rotation = Vector2(-event.relative.x, -event.relative.y)
+        if not controls_enabled:
+                return
+        if event is InputEventMouseMotion:
+                # Fixed: Changed signs to get correct mouse movement
+                camera_rotation = Vector2(-event.relative.x, -event.relative.y)
 
 # Add water splash effect when entering water
 func _on_enter_water():
@@ -157,6 +162,11 @@ func _on_enter_water():
 	splash.explosiveness = 0.8
 	splash.one_shot = true
 	
-	add_child(splash)
-	splash.position.y = -0.5  # Slightly below player origin
-	splash.emitting = true
+        add_child(splash)
+        splash.position.y = -0.5  # Slightly below player origin
+        splash.emitting = true
+
+func set_control_enabled(value: bool):
+        controls_enabled = value
+        if not value:
+                velocity = Vector3.ZERO
