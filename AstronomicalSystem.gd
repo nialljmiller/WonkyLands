@@ -59,8 +59,10 @@ var sun_light: DirectionalLight3D
 var sun_mesh: MeshInstance3D
 var primary_moon_light: DirectionalLight3D
 var primary_moon_mesh: MeshInstance3D
+var primary_moon_material: ShaderMaterial
 var secondary_moon_light: DirectionalLight3D
 var secondary_moon_mesh: MeshInstance3D
+var secondary_moon_material: ShaderMaterial
 var sky_environment: WorldEnvironment
 var star_parent: Node3D
 var stars: Array = []
@@ -202,74 +204,91 @@ func create_sun():
 	add_child(sun_mesh)
 
 func create_primary_moon():
-	# Create moon light
-	primary_moon_light = DirectionalLight3D.new()
-	primary_moon_light.name = "PrimaryMoonLight"
-	primary_moon_light.light_color = primary_moon_color
-	primary_moon_light.light_energy = 0.0  # Start with no light, will be updated based on phase
-	primary_moon_light.shadow_enabled = true
-	
-	# Configure shadow parameters
-	primary_moon_light.shadow_bias = 0.05
-	primary_moon_light.directional_shadow_max_distance = 300.0
-	
-	# Improved moon material
-	var moon_material = StandardMaterial3D.new()
-	moon_material.albedo_color = primary_moon_color
-	moon_material.metallic = 0.0  # Reduce metallic
-	moon_material.roughness = 0.9
-	moon_material.emission_enabled = true  # Add self-illumination
-	moon_material.emission = primary_moon_color.darkened(0.2)  # Slight glow
-	moon_material.emission_energy = 0.7
-	moon_material.billboard_mode = StandardMaterial3D.BILLBOARD_ENABLED
-	
-	var moon_sphere = SphereMesh.new()
-	moon_sphere.radius = primary_moon_size
-	moon_sphere.height = primary_moon_size * 2.0
-	
-	primary_moon_mesh = MeshInstance3D.new()
-	primary_moon_mesh.name = "PrimaryMoonMesh"
-	primary_moon_mesh.mesh = moon_sphere
-	primary_moon_mesh.material_override = moon_material
-	
-	# Add to scene hierarchy
-	add_child(primary_moon_light)
-	add_child(primary_moon_mesh)
+        # Create moon light
+        primary_moon_light = DirectionalLight3D.new()
+        primary_moon_light.name = "PrimaryMoonLight"
+        primary_moon_light.light_color = primary_moon_color
+        primary_moon_light.light_energy = 0.0  # Start with no light, will be updated based on phase
+        primary_moon_light.shadow_enabled = false
+
+        # Configure shadow parameters
+        primary_moon_light.shadow_bias = 0.05
+        primary_moon_light.directional_shadow_max_distance = 300.0
+
+        # Improved moon material with physically-motivated shading
+        primary_moon_material = create_moon_shader_material(primary_moon_color)
+
+        var moon_sphere = SphereMesh.new()
+        moon_sphere.radius = primary_moon_size
+        moon_sphere.height = primary_moon_size * 2.0
+
+        primary_moon_mesh = MeshInstance3D.new()
+        primary_moon_mesh.name = "PrimaryMoonMesh"
+        primary_moon_mesh.mesh = moon_sphere
+        primary_moon_mesh.material_override = primary_moon_material
+        primary_moon_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+        # Add to scene hierarchy
+        add_child(primary_moon_light)
+        add_child(primary_moon_mesh)
 
 func create_secondary_moon():
-	# Create moon light
-	secondary_moon_light = DirectionalLight3D.new()
-	secondary_moon_light.name = "SecondaryMoonLight"
-	secondary_moon_light.light_color = secondary_moon_color
-	secondary_moon_light.light_energy = 0.0  # Start with no light, will be updated based on phase
-	secondary_moon_light.shadow_enabled = true
-	
-	# Configure shadow parameters
-	secondary_moon_light.shadow_bias = 0.05
-	secondary_moon_light.directional_shadow_max_distance = 200.0
-	
-	# Improved moon material
-	var moon_material = StandardMaterial3D.new()
-	moon_material.albedo_color = primary_moon_color
-	moon_material.metallic = 0.0  # Reduce metallic
-	moon_material.roughness = 0.9
-	moon_material.emission_enabled = true  # Add self-illumination
-	moon_material.emission = primary_moon_color.darkened(0.2)  # Slight glow
-	moon_material.emission_energy = 0.7
-	moon_material.billboard_mode = StandardMaterial3D.BILLBOARD_ENABLED
-	
-	var moon_sphere = SphereMesh.new()
-	moon_sphere.radius = secondary_moon_size
-	moon_sphere.height = secondary_moon_size * 2.0
-	
-	secondary_moon_mesh = MeshInstance3D.new()
-	secondary_moon_mesh.name = "SecondaryMoonMesh"
-	secondary_moon_mesh.mesh = moon_sphere
-	secondary_moon_mesh.material_override = moon_material
-	
-	# Add to scene hierarchy
-	add_child(secondary_moon_light)
-	add_child(secondary_moon_mesh)
+        # Create moon light
+        secondary_moon_light = DirectionalLight3D.new()
+        secondary_moon_light.name = "SecondaryMoonLight"
+        secondary_moon_light.light_color = secondary_moon_color
+        secondary_moon_light.light_energy = 0.0  # Start with no light, will be updated based on phase
+        secondary_moon_light.shadow_enabled = false
+
+        # Configure shadow parameters
+        secondary_moon_light.shadow_bias = 0.05
+        secondary_moon_light.directional_shadow_max_distance = 200.0
+
+        # Improved moon material with physically-motivated shading
+        secondary_moon_material = create_moon_shader_material(secondary_moon_color)
+
+        var moon_sphere = SphereMesh.new()
+        moon_sphere.radius = secondary_moon_size
+        moon_sphere.height = secondary_moon_size * 2.0
+
+        secondary_moon_mesh = MeshInstance3D.new()
+        secondary_moon_mesh.name = "SecondaryMoonMesh"
+        secondary_moon_mesh.mesh = moon_sphere
+        secondary_moon_mesh.material_override = secondary_moon_material
+        secondary_moon_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+        # Add to scene hierarchy
+        add_child(secondary_moon_light)
+        add_child(secondary_moon_mesh)
+
+func create_moon_shader_material(base_color: Color) -> ShaderMaterial:
+        var shader = Shader.new()
+        shader.code = """
+shader_type spatial;
+render_mode unshaded, cull_disabled, depth_draw_always;
+
+uniform vec4 albedo_color : source_color = vec4(0.9, 0.9, 0.85, 1.0);
+uniform vec3 sun_direction = vec3(0.0, 0.0, -1.0);
+uniform float phase_strength = 1.0;
+uniform float ambient_term = 0.1;
+uniform float glow_strength = 0.6;
+uniform float terminator_softness = 0.35;
+
+void fragment() {
+    vec3 normal_dir = normalize(NORMAL);
+    float lambert = max(dot(normal_dir, -sun_direction), 0.0);
+    lambert = smoothstep(0.0, terminator_softness, lambert);
+    float brightness = clamp(ambient_term + phase_strength * lambert, 0.0, 1.0);
+    ALBEDO = albedo_color.rgb * brightness;
+    EMISSION = albedo_color.rgb * (ambient_term * 0.5 + glow_strength * brightness);
+    ALPHA = albedo_color.a;
+}
+"""
+
+        var material = ShaderMaterial.new()
+        material.shader = shader
+        material.set_shader_parameter("albedo_color", base_color)
+        return material
 
 func create_stars():
 	# Create parent node for all stars
@@ -455,16 +474,29 @@ func calculate_primary_moon_position():
 	# Calculate moon phase based on angle between sun and moon
 	var moon_to_sun_angle = angle_between_positions(primary_moon_mesh.position, sun_mesh.position)
 	
-	# Point moon light in the correct direction
-	primary_moon_light.look_at_from_position(primary_moon_mesh.position, Vector3.ZERO, Vector3.UP)
-	
-	# Update moon visibility based on its altitude
-	var moon_altitude = calculate_altitude(primary_moon_mesh.position)
-	var moon_visibility = clamp(sin(moon_altitude) + 0.2, 0.0, 1.0)
-	
-	# Update moon light energy based on phase and visibility
-	var phase_factor = (1.0 + cos(moon_to_sun_angle)) / 2.0
-	primary_moon_light.light_energy = primary_moon_intensity * phase_factor * moon_visibility
+        # Point moon light in the correct direction
+        primary_moon_light.look_at_from_position(primary_moon_mesh.position, Vector3.ZERO, Vector3.UP)
+
+        # Update moon visibility based on its altitude
+        var moon_altitude = calculate_altitude(primary_moon_mesh.position)
+        var moon_visibility = clamp(sin(moon_altitude) + 0.2, 0.0, 1.0)
+
+        # Update moon light energy based on phase and visibility
+        var phase_factor = (1.0 + cos(moon_to_sun_angle)) / 2.0
+        primary_moon_light.light_energy = primary_moon_intensity * phase_factor * moon_visibility
+
+        if primary_moon_material:
+                var sun_direction = sun_mesh.position - primary_moon_mesh.position
+                if sun_direction.length_squared() > 0.0001:
+                        primary_moon_material.set_shader_parameter("sun_direction", sun_direction.normalized())
+                else:
+                        primary_moon_material.set_shader_parameter("sun_direction", Vector3(0, 0, -1))
+
+                var illumination = clamp(phase_factor * moon_visibility, 0.0, 1.0)
+                primary_moon_material.set_shader_parameter("phase_strength", illumination)
+
+                var ambient_term = clamp(0.08 + 0.35 * moon_visibility, 0.05, 0.6)
+                primary_moon_material.set_shader_parameter("ambient_term", ambient_term)
 
 func calculate_secondary_moon_position():
 	# Calculate secondary moon position using Kepler's laws for elliptical orbit
@@ -500,16 +532,29 @@ func calculate_secondary_moon_position():
 	# Calculate moon phase
 	var moon_to_sun_angle = angle_between_positions(secondary_moon_mesh.position, sun_mesh.position)
 	
-	# Point moon light
-	secondary_moon_light.look_at_from_position(secondary_moon_mesh.position, Vector3.ZERO, Vector3.UP)
-	
-	# Update moon visibility based on its altitude
-	var moon_altitude = calculate_altitude(secondary_moon_mesh.position)
-	var moon_visibility = clamp(sin(moon_altitude) + 0.2, 0.0, 1.0)
-	
-	# Update moon light energy based on phase and visibility
-	var phase_factor = (1.0 + cos(moon_to_sun_angle)) / 2.0
-	secondary_moon_light.light_energy = secondary_moon_intensity * phase_factor * moon_visibility
+        # Point moon light
+        secondary_moon_light.look_at_from_position(secondary_moon_mesh.position, Vector3.ZERO, Vector3.UP)
+
+        # Update moon visibility based on its altitude
+        var moon_altitude = calculate_altitude(secondary_moon_mesh.position)
+        var moon_visibility = clamp(sin(moon_altitude) + 0.2, 0.0, 1.0)
+
+        # Update moon light energy based on phase and visibility
+        var phase_factor = (1.0 + cos(moon_to_sun_angle)) / 2.0
+        secondary_moon_light.light_energy = secondary_moon_intensity * phase_factor * moon_visibility
+
+        if secondary_moon_material:
+                var sun_direction = sun_mesh.position - secondary_moon_mesh.position
+                if sun_direction.length_squared() > 0.0001:
+                        secondary_moon_material.set_shader_parameter("sun_direction", sun_direction.normalized())
+                else:
+                        secondary_moon_material.set_shader_parameter("sun_direction", Vector3(0, 0, -1))
+
+                var illumination = clamp(phase_factor * moon_visibility, 0.0, 1.0)
+                secondary_moon_material.set_shader_parameter("phase_strength", illumination)
+
+                var ambient_term = clamp(0.08 + 0.35 * moon_visibility, 0.05, 0.6)
+                secondary_moon_material.set_shader_parameter("ambient_term", ambient_term)
 
 func calculate_altitude(position: Vector3) -> float:
 	# Calculate altitude angle of a celestial object from the horizon
@@ -548,9 +593,16 @@ func update_sky_colors():
 	sky_material.ground_bottom_color = Color(0.05, 0.05, 0.05)
 	sky_material.ground_horizon_color = sky_horizon
 	
-	# Update ambient light
-	var ambient_intensity = lerp(ambient_night_intensity, ambient_day_intensity, day_night_factor)
-	sky_environment.environment.ambient_light_energy = ambient_intensity
+        # Update ambient light with moonlight contribution at night
+        var moonlight = 0.0
+        if primary_moon_light:
+                moonlight = max(moonlight, primary_moon_light.light_energy)
+        if secondary_moon_light:
+                moonlight = max(moonlight, secondary_moon_light.light_energy)
+
+        var night_ambient = clamp(ambient_night_intensity + moonlight * 0.15, ambient_night_intensity, ambient_day_intensity)
+        var ambient_intensity = lerp(night_ambient, ambient_day_intensity, day_night_factor)
+        sky_environment.environment.ambient_light_energy = ambient_intensity
 	
 	# Update fog during day/night transition
 	var fog_color = sky_horizon
@@ -566,8 +618,9 @@ func update_sky_colors():
 	sun_light.light_energy = lerp(0.0, sun_intensity_day, sun_transition)
 	
 	# Update sun mesh material
-	var sun_material = sun_mesh.material_override
-	sun_material.emission = sun_light.light_color
+        var sun_material = sun_mesh.material_override
+        sun_material.emission = sun_light.light_color
+        sun_material.emission_energy = lerp(3.0, 8.0, sun_transition)
 	
 	# Make sun visible only when above horizon
 	sun_mesh.visible = sun_altitude > -0.05
