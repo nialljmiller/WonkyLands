@@ -94,7 +94,7 @@ func _apply_flight_physics(delta):
                 control_effectiveness = clamp(speed / takeoff_speed, 0.0, 1.5)
         control_effectiveness = lerp(min_control_effectiveness, 1.0, clamp(control_effectiveness, 0.0, 1.0))
 
-        var local_velocity = basis.xform_inv(velocity)
+        var local_velocity = basis.inverse() * velocity
         var airspeed = max(speed, 0.0)
 
         var angle_of_attack = 0.0
