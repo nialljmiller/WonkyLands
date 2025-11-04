@@ -1,10 +1,17 @@
 [gd_scene load_steps=2 format=3 uid="uid://PLACEHOLDER_UID"]
 
-[ext_resource type="Script" path="res://DeepSeaFish.gd" id="1_fish"]
+[ext_resource type="Script" path="res://Fish.gd" id="1_fish"]
 
 [node name="DeepSeaFish" type="CharacterBody3D"]
 script = ExtResource("1_fish")
+fish_color = Color(0.050000, 0.050000, 0.100000, 1)
+fish_size = Vector3(0.800000, 0.300000, 0.150000)
+swim_speed = 0.800000
+wander_radius = 4.000000
+mesh_style = 2
+lure_enabled = true
+lure_color = Color(0.000000, 0.900000, 1.000000, 1)
+lure_intensity = 3.000000
 min_depth = 10.000000
 preferred_depth = 20.000000
-has_lure = true
-
+depth_response_strength = 0.700000
