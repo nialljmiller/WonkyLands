@@ -3,12 +3,12 @@ extends Node3D
 class_name TreeSystem
 
 # Tree placement settings
-@export var tree_density: float = 0.5
-@export var min_distance_between_trees: float = 3.0
+@export var tree_density: float = 0.2
+@export var min_distance_between_trees: float = 5.0
 @export var max_slope_angle: float = 35.0 # Maximum ground slope angle to place trees (degrees)
 
 # Tree appearance settings
-@export var tree_scale_variation: float = 0.2
+@export var tree_scale_variation: float = 0.3
 @export var tree_rotation_variation: float = 180.0
 
 # Tree placement boundaries
@@ -449,18 +449,18 @@ func place_trees_in_chunk(chunk_node: Node3D, chunk_pos: Vector2, biome_type, te
 			continue
 
 		# All checks passed, place a tree
-                var world_pos = Vector3(world_x, terrain_height, world_z)
-                var local_pos = Vector3(
-                        local_x,
-                        terrain_height - chunk_node.position.y + 0.01,
-                        local_z
-                )
-                placed_positions.append(world_pos)
-                tree_positions[chunk_pos].append(local_pos)
+		var world_pos = Vector3(world_x, terrain_height, world_z)
+		var local_pos = Vector3(
+			local_x,
+			terrain_height - chunk_node.position.y + 0.01,
+			local_z
+		)
+		placed_positions.append(world_pos)
+		tree_positions[chunk_pos].append(local_pos)
 
-                # Create the tree with a specific type from valid types
-                var selected_tree_type = valid_tree_types[randi() % valid_tree_types.size()]
-                create_tree_at_position(world_pos, selected_tree_type, chunk_node)
+		# Create the tree with a specific type from valid types
+		var selected_tree_type = valid_tree_types[randi() % valid_tree_types.size()]
+		create_tree_at_position(world_pos, selected_tree_type, chunk_node)
 
 	# Debug output
 	if placed_positions.size() > 0:
@@ -507,38 +507,38 @@ func calculate_terrain_slope(world_x: float, world_z: float) -> float:
 
 
 func create_tree_at_position(world_position: Vector3, tree_type: String, parent_node: Node3D):
-        if not tree_type in tree_prefabs:
-                push_error("Tree type '", tree_type, "' not found!")
-                return
+		if not tree_type in tree_prefabs:
+				push_error("Tree type '", tree_type, "' not found!")
+				return
 
-        # Instance the tree prefab
-        var tree_node = tree_prefabs[tree_type].duplicate()
+		# Instance the tree prefab
+		var tree_node = tree_prefabs[tree_type].duplicate()
 
-        # Apply random variations
-        var scale_factor = 1.0 + randf_range(-tree_scale_variation, tree_scale_variation)
-        tree_node.scale = Vector3(scale_factor, scale_factor, scale_factor)
+		# Apply random variations
+		var scale_factor = 1.0 + randf_range(-tree_scale_variation, tree_scale_variation)
+		tree_node.scale = Vector3(scale_factor, scale_factor, scale_factor)
 
-        # Apply random rotation around Y axis
-        tree_node.rotation_degrees.y = randf_range(0, tree_rotation_variation)
+		# Apply random rotation around Y axis
+		tree_node.rotation_degrees.y = randf_range(0, tree_rotation_variation)
 
-        # Determine the precise ground height using world coordinates
-        var terrain_height = calculate_terrain_height(world_position.x, world_position.z)
+		# Determine the precise ground height using world coordinates
+		var terrain_height = calculate_terrain_height(world_position.x, world_position.z)
 
-        # Convert to the chunk's local space so trees align with the mesh
-        var chunk_origin = parent_node.position
-        var local_position = Vector3(
-                world_position.x - chunk_origin.x,
-                terrain_height - chunk_origin.y + 0.01,
-                world_position.z - chunk_origin.z
-        )
+		# Convert to the chunk's local space so trees align with the mesh
+		var chunk_origin = parent_node.position
+		var local_position = Vector3(
+				world_position.x - chunk_origin.x,
+				terrain_height - chunk_origin.y + 0.01,
+				world_position.z - chunk_origin.z
+		)
 
-        tree_node.position = local_position
+		tree_node.position = local_position
 
-        # Add to parent
-        parent_node.add_child(tree_node)
-        active_trees.append(tree_node)
+		# Add to parent
+		parent_node.add_child(tree_node)
+		active_trees.append(tree_node)
 
-        return tree_node
+		return tree_node
 
 # Update tree chunks when terrain chunks change
 func update_tree_chunks(player_pos: Vector3, view_distance: int, chunk_size: int):
