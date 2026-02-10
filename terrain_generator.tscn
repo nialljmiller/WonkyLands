@@ -1,8 +1,8 @@
-[gd_scene load_steps=2 format=3 uid="uid://dqgeebl8jivm"]
+[gd_scene format=3 uid="uid://dqgeebl8jivm"]
 
 [ext_resource type="Script" uid="uid://b3kg6bmvartbe" path="res://TerrainGenerator.gd" id="1_7468f"]
 
-[node name="TerrainGenerator" type="Node3D"]
+[node name="TerrainGenerator" type="Node3D" unique_id=247039046]
 script = ExtResource("1_7468f")
 
-[node name="Camera3D" type="Camera3D" parent="."]
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1492317075]
