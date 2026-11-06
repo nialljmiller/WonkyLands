@@ -73,41 +73,19 @@ func _ready():
 	detection_area.body_entered.connect(_on_body_entered_detection)
 	detection_area.body_exited.connect(_on_body_exited_detection)
 
-	# Find water system node
-	water_system = get_node_or_null("/root/TerrainGenerator/WaterSystem")
-
-	if not water_system:
-		# Try alternative paths
-		var terrain_gen = get_node_or_null("/root/TerrainGenerator")
-		if terrain_gen:
-			water_system = terrain_gen.get_node_or_null("WaterSystem")
-
-		if not water_system:
-			# Search the entire scene tree
-			water_system = find_water_system_in_tree(get_tree().root)
-
-	if not water_system:
-		print("WARNING: Fish could not find WaterSystem node")
-
-
-func find_water_system_in_tree(node):
-	if node.name == "WaterSystem":
-		return node
-
-	for child in node.get_children():
-		var result = find_water_system_in_tree(child)
-		if result:
-			return result
-
-	return null
+	# Resolve water system via World — no tree walking.
+	if typeof(World) != TYPE_NIL:
+		water_system = World.get_water_system()
 
 
 func _physics_process(delta):
 	# Reduce timer for changing target
 	time_until_new_target -= delta
 
-	# Check if player is nearby to flee
-	var player = get_node_or_null("/root/TerrainGenerator/Player")
+	# Get player via World
+	var player: Node = null
+	if typeof(World) != TYPE_NIL:
+		player = World.get_player()
 	var player_too_close = false
 
 	if player and player.global_position.distance_to(global_position) < flee_distance:
@@ -143,21 +121,9 @@ func _physics_process(delta):
 	# Apply small vertical wobble for natural movement
 	velocity.y += sin(Time.get_ticks_msec() / 500.0) * 0.2
 
-	# Apply water flow if in water system
-	if water_system:
-		var flow_direction = water_system.flow_direction
-		var flow_strength = water_system.flow_strength
-
-		# Apply river flow if in river
-		for river in water_system.rivers:
-			if river.get_node("RiverBody").overlaps_body(self):
-				var river_material = river.material_override
-				if river_material:
-					flow_direction = river_material.get_shader_parameter("flow_direction")
-					flow_strength = river_material.get_shader_parameter("flow_strength") * 0.5  # Fish resist flow partially
-				break
-
-		velocity += flow_direction * flow_strength * 0.3  # Fish partially resist water flow
+	# Apply water flow (ocean currents) — fish partially resist.
+	if typeof(World) != TYPE_NIL:
+		velocity += World.get_flow_direction() * World.get_flow_strength() * 0.3
 
 	# Apply any depth preferences before moving
 	_apply_depth_preferences(delta)
