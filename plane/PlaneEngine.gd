@@ -26,9 +26,12 @@ func thrust_force(throttle: float, altitude: float, air_density_sea_level: float
 	return Vector3(0, 0, -max_thrust * throttle * density_scale)
 
 func thrust_torque(throttle: float, aoa: float) -> Vector3:
-	# P-factor (yaw) + torque reaction (roll). Returned in plane-local.
-	var p_factor_yaw: float = -p_factor_gain * throttle * aoa
-	var torque_react_roll: float = -torque_reaction_gain * throttle
+	# P-factor (yaw) + torque reaction (roll) in standard-physics sign.
+	# Convention: tractor prop spinning CW viewed from pilot →
+	#   * P-factor at positive AoA + power yaws nose LEFT (+τ_y)
+	#   * Reaction rolls airframe LEFT (+τ_z)
+	var p_factor_yaw: float = p_factor_gain * throttle * aoa
+	var torque_react_roll: float = torque_reaction_gain * throttle
 	return Vector3(0.0, p_factor_yaw, torque_react_roll)
 
 func propwash_q(throttle: float, airspeed: float, takeoff_speed: float) -> float:

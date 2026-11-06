@@ -230,7 +230,12 @@ static func make_starter_cessna() -> Variant:
 	v_stab.incidence_deg = 0.0
 	v_stab.strips = 4
 	v_stab.surface_input = "yaw"
-	v_stab.surface_sign = 1.0
+	# Positive yaw input (E key) = yaw right = nose rotates toward +X.
+	# In standard physics that's negative τ_y (rotate_y with negative
+	# ω_y). Rudder deflects such that v-stab Cl goes negative → side
+	# force in -X at tail → torque r × F = (0, _, +z) × (-X, 0, 0) =
+	# (0, -z*X, 0) which for z>0, X>0 gives τ_y < 0 → yaw right.
+	v_stab.surface_sign = -1.0
 	v_stab.surface_span_start = 0.0
 	v_stab.surface_span_end = 1.0
 	v_stab.surface_max_deflection_deg = 25.0

@@ -252,10 +252,13 @@ func _apply_flight_physics(delta: float) -> void:
 	)
 	angular_velocity_local += ang_accel * delta
 
-	# Apply rotation in body frame.
-	rotate_object_local(Vector3.RIGHT,   angular_velocity_local.x * delta)   # pitch
-	rotate_y(                            angular_velocity_local.y * delta)   # yaw
-	rotate_object_local(Vector3.FORWARD, angular_velocity_local.z * delta)   # roll
+	# Apply rotation in body frame. All three axes use the +axis vector
+	# (RIGHT = +X, Y-axis = +Y, BACK = +Z) so standard-physics torques
+	# from r × F integrate directly into the right rotation direction.
+	# Using FORWARD (-Z) for roll inverts the sign relative to physics.
+	rotate_object_local(Vector3.RIGHT, angular_velocity_local.x * delta)   # pitch
+	rotate_y(                          angular_velocity_local.y * delta)   # yaw
+	rotate_object_local(Vector3.BACK,  angular_velocity_local.z * delta)   # roll
 
 func _apply_taxi_physics(
 	delta: float,
