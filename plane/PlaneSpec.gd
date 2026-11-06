@@ -81,12 +81,21 @@ static func make_starter_cessna() -> Variant:
 	var right_span_dir: Vector3 = Vector3(cos(dihedral_rad), sin(dihedral_rad), 0.0)
 	var left_span_dir: Vector3 = Vector3(-cos(dihedral_rad), sin(dihedral_rad), 0.0)
 
+	# lift_axis for a dihedraled wing: rotate world-up (0,1,0) about the
+	# fuselage axis (+Z) by the dihedral angle, with sign matching each
+	# side. This is what makes dihedral produce the roll-restoring
+	# moment under sideslip — the thing that makes the plane want to
+	# stay wings-level instead of spiraling.
+	var right_lift_axis: Vector3 = Vector3(-sin(dihedral_rad), cos(dihedral_rad), 0.0)
+	var left_lift_axis:  Vector3 = Vector3( sin(dihedral_rad), cos(dihedral_rad), 0.0)
+
 	# Right inboard (flap)
 	var r_in = Wing.new()
 	r_in.name = "RightInboard"
 	r_in.airfoil = main_airfoil
 	r_in.root_pos = Vector3(0.0, wing_y, wing_z)
 	r_in.span_direction = right_span_dir
+	r_in.lift_axis = right_lift_axis
 	r_in.span = half_span * 0.5
 	r_in.chord = chord
 	r_in.incidence_deg = 1.5
@@ -96,7 +105,7 @@ static func make_starter_cessna() -> Variant:
 	r_in.surface_span_start = 0.0
 	r_in.surface_span_end = 1.0
 	r_in.surface_max_deflection_deg = 35.0
-	r_in.surface_effectiveness = 0.35
+	r_in.surface_effectiveness = 0.25
 	spec.wings.append(r_in)
 
 	# Right outboard (aileron)
@@ -105,6 +114,7 @@ static func make_starter_cessna() -> Variant:
 	r_out.airfoil = main_airfoil
 	r_out.root_pos = Vector3(half_span * 0.5 * cos(dihedral_rad), wing_y + half_span * 0.5 * sin(dihedral_rad), wing_z)
 	r_out.span_direction = right_span_dir
+	r_out.lift_axis = right_lift_axis
 	r_out.span = half_span * 0.5
 	r_out.chord = chord
 	r_out.incidence_deg = 1.5
@@ -114,7 +124,7 @@ static func make_starter_cessna() -> Variant:
 	r_out.surface_span_start = 0.0
 	r_out.surface_span_end = 1.0
 	r_out.surface_max_deflection_deg = 20.0
-	r_out.surface_effectiveness = 0.5
+	r_out.surface_effectiveness = 0.12
 	spec.wings.append(r_out)
 
 	# Left inboard (flap)
@@ -123,6 +133,7 @@ static func make_starter_cessna() -> Variant:
 	l_in.airfoil = main_airfoil
 	l_in.root_pos = Vector3(0.0, wing_y, wing_z)
 	l_in.span_direction = left_span_dir
+	l_in.lift_axis = left_lift_axis
 	l_in.span = half_span * 0.5
 	l_in.chord = chord
 	l_in.incidence_deg = 1.5
@@ -133,7 +144,7 @@ static func make_starter_cessna() -> Variant:
 	l_in.surface_span_start = 0.0
 	l_in.surface_span_end = 1.0
 	l_in.surface_max_deflection_deg = 35.0
-	l_in.surface_effectiveness = 0.35
+	l_in.surface_effectiveness = 0.25
 	spec.wings.append(l_in)
 
 	# Left outboard (aileron, opposite sign to right)
@@ -142,6 +153,7 @@ static func make_starter_cessna() -> Variant:
 	l_out.airfoil = main_airfoil
 	l_out.root_pos = Vector3(-half_span * 0.5 * cos(dihedral_rad), wing_y + half_span * 0.5 * sin(dihedral_rad), wing_z)
 	l_out.span_direction = left_span_dir
+	l_out.lift_axis = left_lift_axis
 	l_out.span = half_span * 0.5
 	l_out.chord = chord
 	l_out.incidence_deg = 1.5
@@ -152,7 +164,7 @@ static func make_starter_cessna() -> Variant:
 	l_out.surface_span_start = 0.0
 	l_out.surface_span_end = 1.0
 	l_out.surface_max_deflection_deg = 20.0
-	l_out.surface_effectiveness = 0.5
+	l_out.surface_effectiveness = 0.12
 	spec.wings.append(l_out)
 
 	# Horizontal stabilizer — two halves with the elevator spanning both.
@@ -181,7 +193,7 @@ static func make_starter_cessna() -> Variant:
 	h_right.surface_span_start = 0.0
 	h_right.surface_span_end = 1.0
 	h_right.surface_max_deflection_deg = 25.0
-	h_right.surface_effectiveness = 0.55
+	h_right.surface_effectiveness = 0.25
 	spec.wings.append(h_right)
 
 	var h_left = Wing.new()
@@ -198,7 +210,7 @@ static func make_starter_cessna() -> Variant:
 	h_left.surface_span_start = 0.0
 	h_left.surface_span_end = 1.0
 	h_left.surface_max_deflection_deg = 25.0
-	h_left.surface_effectiveness = 0.55
+	h_left.surface_effectiveness = 0.25
 	spec.wings.append(h_left)
 
 	# Vertical stabilizer — span along +Y (up), lift_axis along +X so
@@ -222,17 +234,20 @@ static func make_starter_cessna() -> Variant:
 	v_stab.surface_span_start = 0.0
 	v_stab.surface_span_end = 1.0
 	v_stab.surface_max_deflection_deg = 25.0
-	v_stab.surface_effectiveness = 0.55
+	v_stab.surface_effectiveness = 0.25
 	spec.wings.append(v_stab)
 
-	# Engine
+	# Engine — tuned for Cessna-ish thrust-to-weight (~0.25). The
+	# previous values (26 kN thrust, 900 N·m torque reaction, 1500 N·m
+	# P-factor) were roughly 5–10× real GA numbers and produced
+	# uncontrollable torque-induced roll under power.
 	var eng = PlaneEngine.new()
-	eng.max_thrust = 26000.0
+	eng.max_thrust = 3200.0           # ~0.27 g T/W at 1200 kg
 	eng.throttle_response = 1.8
 	eng.position = Vector3(0, 0.1, -2.9)
-	eng.p_factor_gain = 1500.0
-	eng.torque_reaction_gain = 900.0
-	eng.propwash_q_at_full = 600.0
+	eng.p_factor_gain = 350.0         # mild yaw tendency at high-AoA + power
+	eng.torque_reaction_gain = 180.0  # noticeable but not dominant roll tendency
+	eng.propwash_q_at_full = 250.0    # Pa, added to tail-surface strips
 	spec.engine = eng
 
 	return spec

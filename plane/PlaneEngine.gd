@@ -12,12 +12,12 @@ extends RefCounted
 ##   over tail surfaces, preserving control authority at low airspeeds
 ##   with the throttle up.
 
-var max_thrust: float = 26000.0
+var max_thrust: float = 3200.0            # N — GA default; the spec may override
 var throttle_response: float = 1.8        # 0→1 per second
 var position: Vector3 = Vector3(0, 0, -2.9)   # plane-local (CG at origin)
-var p_factor_gain: float = 1200.0         # N·m per radian of AoA at full throttle
-var torque_reaction_gain: float = 900.0   # N·m at full throttle (negative = roll left for CW-spinning prop viewed from front)
-var propwash_q_at_full: float = 500.0     # Pa added to tail-surface dynamic pressure at full throttle
+var p_factor_gain: float = 350.0          # N·m per radian of AoA at full throttle
+var torque_reaction_gain: float = 180.0   # N·m at full throttle
+var propwash_q_at_full: float = 250.0     # Pa added to tail-surface dynamic pressure at full throttle
 var density_scale_height: float = 8500.0
 
 func thrust_force(throttle: float, altitude: float, air_density_sea_level: float) -> Vector3:
