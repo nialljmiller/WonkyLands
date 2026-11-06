@@ -41,7 +41,7 @@ class_name AstronomicalSystem
 @export var secondary_moon_intensity: float = 0.15  # Light intensity from moon
 
 # Stars
-@export var star_count: int = 3000  # Number of stars to generate
+@export var star_count: int = 1000  # Number of stars to generate (each is its own MeshInstance3D — keep modest)
 @export var milky_way_concentration: float = 0.7  # Concentration of stars along galactic plane
 @export var milky_way_width: float = 30.0  # Width of the galactic plane in degrees
 @export var galactic_plane_inclination: float = 60.0  # Galactic plane inclination in degrees

@@ -51,7 +51,7 @@ var water_plane_mesh: PlaneMesh
 const WATER_SHADER_PATH := "res://RealisticWaterShader.gdshader"
 var water_shader: Shader
 var wave_time: float = 0.0
-@export var shader_update_interval: float = 0.0
+@export var shader_update_interval: float = 0.033  # 30 Hz — enough for visible wave motion
 var _shader_update_timer: float = 0.0
 
 # Subsystems
