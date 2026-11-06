@@ -65,13 +65,13 @@ func accumulate_forces(
 	var span_dir: Vector3 = span_direction.normalized()
 	var incidence: float = deg_to_rad(incidence_deg)
 
-	# Wing-local axes rotated by incidence about the span. For a standard
-	# horizontal right wing with lift_axis=+Y and chord_axis=+Z, positive
-	# incidence tilts the chord up (leading edge rises). For a vertical
-	# stabilizer with lift_axis=+X and chord_axis=+Z, incidence at 0 is
-	# the normal case (symmetric, no built-in AoA).
-	var chord_dir: Vector3 = chord_axis.rotated(span_dir, -incidence).normalized()
-	var lift_dir: Vector3  = lift_axis.rotated(span_dir, -incidence).normalized()
+	# Wing-local axes rotated by incidence about the span. Positive
+	# incidence = leading edge up, which rotates the chord vector (LE→TE)
+	# so its tip drops toward -Y in body frame. The sign of the rotation
+	# angle here must be +incidence; -incidence flips it and the wing
+	# produces negative lift at positive AoA.
+	var chord_dir: Vector3 = chord_axis.rotated(span_dir, incidence).normalized()
+	var lift_dir: Vector3  = lift_axis.rotated(span_dir, incidence).normalized()
 
 	for i in range(strips):
 		var dist_along_span: float = (i + 0.5) * strip_span

@@ -242,17 +242,17 @@ static func make_starter_cessna() -> Variant:
 	v_stab.surface_effectiveness = 0.25
 	spec.wings.append(v_stab)
 
-	# Engine — tuned for Cessna-ish thrust-to-weight (~0.25). The
-	# previous values (26 kN thrust, 900 N·m torque reaction, 1500 N·m
-	# P-factor) were roughly 5–10× real GA numbers and produced
-	# uncontrollable torque-induced roll under power.
+	# Engine — bush-plane style, T/W ~0.47 so the plane actually clears
+	# the 130 m runway with margin to spare. A real C172 at T/W ~0.25
+	# needs 90 m ground run; our shorter effective runway + the drag
+	# of a chunky bush-plane model wants more punch here.
 	var eng = PlaneEngine.new()
-	eng.max_thrust = 3200.0           # ~0.27 g T/W at 1200 kg
+	eng.max_thrust = 5500.0
 	eng.throttle_response = 1.8
 	eng.position = Vector3(0, 0.1, -2.9)
-	eng.p_factor_gain = 350.0         # mild yaw tendency at high-AoA + power
-	eng.torque_reaction_gain = 180.0  # noticeable but not dominant roll tendency
-	eng.propwash_q_at_full = 250.0    # Pa, added to tail-surface strips
+	eng.p_factor_gain = 350.0
+	eng.torque_reaction_gain = 180.0
+	eng.propwash_q_at_full = 250.0
 	spec.engine = eng
 
 	return spec
