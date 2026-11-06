@@ -1,39 +1,11 @@
-[gd_scene load_steps=11 format=3 uid="uid://car6rtdoxkv4y"]
+[gd_scene load_steps=4 format=3 uid="uid://car6rtdoxkv4y"]
 
-[ext_resource type="Script" uid="uid://bbwk1e3fxtos5" path="res://PlaneController.gd" id="1_x4eim"]
+[ext_resource type="Script" path="res://PlaneController.gd" id="1_x4eim"]
 
-[sub_resource type="BoxShape3D" id="BoxShape3D_ye1ff"]
+[sub_resource type="BoxShape3D" id="BoxShape3D_body"]
 size = Vector3(3.4, 1.4, 5.6)
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_d7l1q"]
-albedo_color = Color(0.82, 0.83, 0.86, 1)
-metallic = 0.1
-roughness = 0.6
-
-[sub_resource type="BoxMesh" id="BoxMesh_0u8rs"]
-size = Vector3(1.4, 1.2, 5.2)
-
-[sub_resource type="BoxMesh" id="BoxMesh_kg4y0"]
-size = Vector3(8, 0.2, 1.6)
-
-[sub_resource type="BoxMesh" id="BoxMesh_lc8pi"]
-size = Vector3(2.4, 0.25, 1)
-
-[sub_resource type="BoxMesh" id="BoxMesh_wpsh4"]
-size = Vector3(0.5, 1.4, 0.3)
-
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_1ut3p"]
-albedo_color = Color(0.74, 0.1, 0.1, 1)
-roughness = 0.4
-
-[sub_resource type="CylinderMesh" id="CylinderMesh_bzujd"]
-top_radius = 0.15
-bottom_radius = 0.15
-height = 3.0
-radial_segments = 4
-rings = 2
-
-[sub_resource type="BoxShape3D" id="BoxShape3D_v8z7f"]
+[sub_resource type="BoxShape3D" id="BoxShape3D_entry"]
 size = Vector3(3.5, 2.5, 6.5)
 
 [node name="BushPlane" type="CharacterBody3D"]
@@ -41,38 +13,14 @@ floor_snap_length = 1.0
 script = ExtResource("1_x4eim")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]
-shape = SubResource("BoxShape3D_ye1ff")
-
-[node name="Fuselage" type="MeshInstance3D" parent="."]
-material_override = SubResource("StandardMaterial3D_d7l1q")
-mesh = SubResource("BoxMesh_0u8rs")
-
-[node name="Wing" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.2, -0.2)
-material_override = SubResource("StandardMaterial3D_d7l1q")
-mesh = SubResource("BoxMesh_kg4y0")
-
-[node name="TailPlane" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.65, 2.3)
-material_override = SubResource("StandardMaterial3D_d7l1q")
-mesh = SubResource("BoxMesh_lc8pi")
-
-[node name="TailFin" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 0.2, -0.98, 0, 0.98, 0.2, 0, 1.2, 2.1)
-material_override = SubResource("StandardMaterial3D_d7l1q")
-mesh = SubResource("BoxMesh_wpsh4")
-
-[node name="Propeller" type="MeshInstance3D" parent="."]
-transform = Transform3D(0.96, 0, 0.28, 0, 1, 0, -0.28, 0, 0.96, 0, 0, -2.9)
-material_override = SubResource("StandardMaterial3D_1ut3p")
-mesh = SubResource("CylinderMesh_bzujd")
+shape = SubResource("BoxShape3D_body")
 
 [node name="EntryArea" type="Area3D" parent="."]
 monitorable = false
 
 [node name="EntryCollision" type="CollisionShape3D" parent="EntryArea"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.8, 0, -0.5)
-shape = SubResource("BoxShape3D_v8z7f")
+shape = SubResource("BoxShape3D_entry")
 
 [node name="Seat" type="Marker3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, -0.5)
