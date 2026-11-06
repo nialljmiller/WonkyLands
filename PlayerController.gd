@@ -1,172 +1,212 @@
 extends CharacterBody3D
+class_name PlayerController
+## On-foot player controller.
+##
+## State machine: GROUNDED / AIRBORNE / SWIMMING. Mouse look is accumulated
+## in _input and applied in _physics_process so camera motion stays consistent
+## regardless of render framerate. Public API (enter_water, exit_water,
+## is_in_water, set_control_enabled) is what other systems should call —
+## no more get_meta backchannels.
 
-# Movement settings
-@export var move_speed: float = 10.0
-@export var jump_strength: float = 15.0
-@export var gravity_magnitude: float = 30.0
-@export var look_sensitivity: float = 0.3
+# ---------------------------------------------------------------------
+# Tunables
+# ---------------------------------------------------------------------
+@export_category("Movement")
+@export var walk_speed: float = 6.0
+@export var sprint_speed: float = 10.0
+@export var ground_accel: float = 40.0
+@export var ground_friction: float = 30.0
+@export var air_accel: float = 8.0
+@export var air_friction: float = 1.5
+@export var jump_strength: float = 8.0
+@export var gravity: float = 24.0
 
-# Swimming settings
-@export var swim_speed: float = 6.0
-@export var swim_vertical_speed: float = 5.0
-@export var water_drag: float = 0.7
+@export_category("Swimming")
+@export var swim_speed: float = 5.0
+@export var swim_accel: float = 20.0
+@export var swim_friction: float = 8.0
+@export var swim_buoyancy: float = 1.5  # m/s drift toward surface when idle
 
-# Camera variables
-var camera_rotation = Vector2()
+@export_category("Look")
+@export var mouse_sensitivity: float = 0.12  # degrees per pixel
+@export var pitch_limit_deg: float = 89.0
 
-# State flags
-var is_swimming = false
-var controls_enabled := true
+# ---------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------
+enum State { GROUNDED, AIRBORNE, SWIMMING }
 
-func _ready():
+var _state: int = State.AIRBORNE
+var _in_water: bool = false
+var _controls_enabled: bool = true
+var _pending_look: Vector2 = Vector2.ZERO
+var _yaw: float = 0.0
+var _pitch: float = 0.0
+var _camera: Camera3D = null
+
+# ---------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------
+func _ready() -> void:
+	_camera = _find_or_create_camera()
+	_yaw = rotation.y
+	_pitch = _camera.rotation.x
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	if typeof(World) != TYPE_NIL:
+		World.register_player(self)
 
-func _physics_process(delta):
-	if not controls_enabled:
-		return
-	# Check if we're in water (set by water system)
-	is_swimming = get_meta("is_swimming", false)
-	
-	if is_swimming:
-		process_swimming(delta)
-	else:
-		process_walking(delta)
-	
-	# Apply camera rotation
-	var camera = get_node("Camera3D")
-	camera.rotation_degrees.x = clamp(camera.rotation_degrees.x + camera_rotation.y * look_sensitivity, -89, 89)
-	# Fixed: Changed negative to positive to correct horizontal mouse look
-	rotate_y(camera_rotation.x * look_sensitivity * 0.01)
-	
-	# Reset camera rotation
-	camera_rotation = Vector2()
-
-func process_walking(delta):
-	# Apply gravity when not on floor
-	if not is_on_floor():
-		velocity.y -= gravity_magnitude * delta
-	
-	# Get movement input
-	var input_dir = Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
-	
-	# Get the camera's horizontal rotation to determine forward direction
-	var forward_dir = -get_node("Camera3D").global_transform.basis.z
-	forward_dir.y = 0
-	forward_dir = forward_dir.normalized()
-	
-	# Get the right direction relative to the camera
-	var right_dir = forward_dir.cross(Vector3.UP)
-	
-	# Calculate movement direction relative to camera orientation
-	var direction = (right_dir * input_dir.x + forward_dir * -input_dir.y).normalized()
-	
-	# Set horizontal velocity
-	if direction:
-		velocity.x = direction.x * move_speed
-		velocity.z = direction.z * move_speed
-	else:
-		velocity.x = move_toward(velocity.x, 0, move_speed)
-		velocity.z = move_toward(velocity.z, 0, move_speed)
-	
-	# Handle jumping
-	if Input.is_action_just_pressed("ui_accept") and is_on_floor():
-		velocity.y = jump_strength
-	
-	# Move with physics
-	move_and_slide()
-
-func process_swimming(delta):
-	# In water, we want 3D movement controlled by camera direction
-	var input_dir = Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
-	
-	# Camera-based movement directions
-	var camera = get_node("Camera3D")
-	var forward_dir = -camera.global_transform.basis.z.normalized()
-	var right_dir = camera.global_transform.basis.x.normalized()
-	
-	# Calculate movement direction in 3D space
-	var direction = (right_dir * input_dir.x + forward_dir * -input_dir.y).normalized()
-	
-	# Apply swimming controls
-	if direction:
-		velocity.x = direction.x * swim_speed
-		velocity.z = direction.z * swim_speed
-		
-		# Forward movement also affects vertical position based on camera angle
-		velocity.y = direction.y * swim_speed
-	else:
-		# Apply water drag
-		velocity.x = move_toward(velocity.x, 0, swim_speed * water_drag)
-		velocity.z = move_toward(velocity.z, 0, swim_speed * water_drag)
-		velocity.y = move_toward(velocity.y, 0, swim_speed * water_drag)
-	
-	# Vertical swimming controls (up/down)
-	if Input.is_action_pressed("ui_accept"):  # Space to swim up
-		velocity.y = swim_vertical_speed
-	elif Input.is_action_pressed("ui_focus_next"):  # Tab to swim down (can change control)
-		velocity.y = -swim_vertical_speed
-	
-	# Apply very slight gravity while swimming (buoyancy almost cancels it)
-	velocity.y -= 0.5 * delta
-	
-	# Move with physics
-	move_and_slide()
-	
-	# When swimming to the surface, transition smoothly
-	if !is_swimming and velocity.y > 0:
-		# Allow a bit of "jump" out of water
-		velocity.y = max(velocity.y, jump_strength / 2)
-
-func _input(event):
-	if not controls_enabled:
+func _input(event: InputEvent) -> void:
+	if not _controls_enabled:
 		return
 	if event is InputEventMouseMotion:
-		# Fixed: Changed signs to get correct mouse movement
-		camera_rotation = Vector2(-event.relative.x, -event.relative.y)
+		_pending_look += event.relative
+	elif event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+		# toggle capture for debugging; harmless in gameplay
+		Input.mouse_mode = (Input.MOUSE_MODE_VISIBLE
+			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+			else Input.MOUSE_MODE_CAPTURED)
 
-# Add water splash effect when entering water
-func _on_enter_water():
-	# Play splash sound
-	var splash_audio = AudioStreamPlayer3D.new()
-	# splash_audio.stream = load("res://sounds/splash.wav")  # Create this sound file
-	splash_audio.autoplay = true
-	splash_audio.max_distance = 10.0
-	add_child(splash_audio)
-	
-	# Spawn splash particles
-	var splash = GPUParticles3D.new()
-	splash.name = "WaterSplash"
-	
-	var particle_material = ParticleProcessMaterial.new()
-	particle_material.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
-	particle_material.emission_sphere_radius = 0.5
-	particle_material.direction = Vector3(0, 1, 0)
-	particle_material.spread = 45.0
-	particle_material.initial_velocity_min = 2.0
-	particle_material.initial_velocity_max = 5.0
-	particle_material.gravity = Vector3(0, -9.8, 0)
-	particle_material.scale_min = 0.1
-	particle_material.scale_max = 0.3
-	particle_material.color = Color(0.7, 0.8, 1.0, 0.8)
-	
-	splash.process_material = particle_material
-	
-	# Create splash mesh
-	var splash_mesh = SphereMesh.new()
-	splash_mesh.radius = 0.05
-	splash_mesh.height = 0.1
-	
-	splash.draw_pass_1 = splash_mesh
-	splash.amount = 50
-	splash.lifetime = 1.0
-	splash.explosiveness = 0.8
-	splash.one_shot = true
-	
-	add_child(splash)
-	splash.position.y = -0.5  # Slightly below player origin
-	splash.emitting = true
+func _physics_process(delta: float) -> void:
+	_apply_look()
+	if not _controls_enabled:
+		velocity = Vector3.ZERO
+		move_and_slide()
+		return
+	_update_state()
+	match _state:
+		State.SWIMMING: _process_swimming(delta)
+		State.GROUNDED: _process_grounded(delta)
+		State.AIRBORNE: _process_airborne(delta)
+	move_and_slide()
 
-func set_control_enabled(value: bool):
-	controls_enabled = value
+# ---------------------------------------------------------------------
+# Public API — other systems call these, no meta backchannel.
+# ---------------------------------------------------------------------
+func enter_water() -> void:
+	if _in_water:
+		return
+	_in_water = true
+	if typeof(World) != TYPE_NIL:
+		World.notify_player_entered_water(self)
+
+func exit_water() -> void:
+	if not _in_water:
+		return
+	_in_water = false
+	if typeof(World) != TYPE_NIL:
+		World.notify_player_exited_water(self)
+
+func is_in_water() -> bool:
+	return _in_water
+
+func set_control_enabled(value: bool) -> void:
+	_controls_enabled = value
 	if not value:
 		velocity = Vector3.ZERO
+
+# ---------------------------------------------------------------------
+# Look
+# ---------------------------------------------------------------------
+func _apply_look() -> void:
+	if _pending_look == Vector2.ZERO:
+		return
+	_yaw -= deg_to_rad(_pending_look.x * mouse_sensitivity)
+	_pitch -= deg_to_rad(_pending_look.y * mouse_sensitivity)
+	_pitch = clamp(_pitch, -deg_to_rad(pitch_limit_deg), deg_to_rad(pitch_limit_deg))
+	rotation.y = _yaw
+	if _camera:
+		_camera.rotation.x = _pitch
+	_pending_look = Vector2.ZERO
+
+# ---------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------
+func _update_state() -> void:
+	if _in_water:
+		_state = State.SWIMMING
+	elif is_on_floor():
+		_state = State.GROUNDED
+	else:
+		_state = State.AIRBORNE
+
+func _input_dir_planar() -> Vector3:
+	# WASD in XZ plane, relative to current yaw.
+	var ix := Input.get_action_strength("player_right") - Input.get_action_strength("player_left")
+	var iz := Input.get_action_strength("player_back") - Input.get_action_strength("player_forward")
+	var raw := Vector3(ix, 0.0, iz)
+	if raw.length_squared() < 1e-6:
+		return Vector3.ZERO
+	return (Basis.from_euler(Vector3(0.0, _yaw, 0.0)) * raw).normalized()
+
+# ---------------------------------------------------------------------
+# Grounded
+# ---------------------------------------------------------------------
+func _process_grounded(delta: float) -> void:
+	var speed: float = sprint_speed if Input.is_action_pressed("player_sprint") else walk_speed
+	var dir := _input_dir_planar()
+	var target := dir * speed
+	var horiz := Vector3(velocity.x, 0.0, velocity.z)
+	if dir == Vector3.ZERO:
+		horiz = horiz.move_toward(Vector3.ZERO, ground_friction * delta)
+	else:
+		horiz = horiz.move_toward(target, ground_accel * delta)
+	velocity.x = horiz.x
+	velocity.z = horiz.z
+	if Input.is_action_just_pressed("player_jump"):
+		velocity.y = jump_strength
+	else:
+		# tiny downward bias keeps is_on_floor() stable on slopes
+		velocity.y = -0.5
+
+# ---------------------------------------------------------------------
+# Airborne
+# ---------------------------------------------------------------------
+func _process_airborne(delta: float) -> void:
+	var dir := _input_dir_planar()
+	var target := dir * walk_speed
+	var horiz := Vector3(velocity.x, 0.0, velocity.z)
+	if dir == Vector3.ZERO:
+		horiz = horiz.move_toward(Vector3.ZERO, air_friction * delta)
+	else:
+		horiz = horiz.move_toward(target, air_accel * delta)
+	velocity.x = horiz.x
+	velocity.z = horiz.z
+	velocity.y -= gravity * delta
+
+# ---------------------------------------------------------------------
+# Swimming — full 3D, camera-relative, with slight upward buoyancy.
+# ---------------------------------------------------------------------
+func _process_swimming(delta: float) -> void:
+	var ix := Input.get_action_strength("player_right") - Input.get_action_strength("player_left")
+	var iz := Input.get_action_strength("player_back") - Input.get_action_strength("player_forward")
+	var iy := Input.get_action_strength("player_swim_up") - Input.get_action_strength("player_swim_down")
+
+	# Forward uses camera direction so look-down = swim-down.
+	var cam_basis: Basis = _camera.global_transform.basis if _camera else global_transform.basis
+	var fwd: Vector3 = -cam_basis.z
+	var right: Vector3 = cam_basis.x
+	var up: Vector3 = Vector3.UP
+
+	var dir := (right * ix + fwd * -iz + up * iy)
+	var target := Vector3.ZERO
+	if dir.length_squared() > 1e-6:
+		target = dir.normalized() * swim_speed
+
+	if target == Vector3.ZERO:
+		velocity = velocity.move_toward(Vector3(0.0, swim_buoyancy, 0.0), swim_friction * delta)
+	else:
+		velocity = velocity.move_toward(target, swim_accel * delta)
+
+# ---------------------------------------------------------------------
+# Camera setup — lenient so this works whether the scene provides a
+# Camera3D child, a differently-named camera, or none at all.
+# ---------------------------------------------------------------------
+func _find_or_create_camera() -> Camera3D:
+	for child in get_children():
+		if child is Camera3D:
+			return child
+	var cam := Camera3D.new()
+	cam.name = "Camera3D"
+	cam.position = Vector3(0.0, 0.7, 0.0)
+	add_child(cam)
+	return cam
