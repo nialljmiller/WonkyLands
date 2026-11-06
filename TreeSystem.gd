@@ -133,6 +133,10 @@ func place_trees_in_chunk(chunk_node: Node3D, chunk_pos: Vector2, biome_type: in
 		if terrain_height < water_level + 0.5:
 			continue
 
+		# Don't plant on the runway or inside the base footprint.
+		if typeof(World) != TYPE_NIL and World.is_in_base_core(world_x, world_z):
+			continue
+
 		var candidates: Array = []
 		for species in species_list:
 			if species.accepts(biome_name, terrain_height):

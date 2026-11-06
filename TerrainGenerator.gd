@@ -28,6 +28,9 @@ var astronomical_system = null
 @export var enable_plane: bool = true
 @export var plane_spawn_offset: Vector3 = Vector3(40, 6, -25)
 
+# Origin base settings
+@export var enable_origin_base: bool = true
+
 # Noise generation resource
 var noise = FastNoiseLite.new()
 var biome_noise = FastNoiseLite.new()  # For biome selection
@@ -76,6 +79,9 @@ func _ready():
 	if has_node("Player"):
 		initial_position = $Player.global_position
 	update_terrain_chunks(initial_position)
+
+	if enable_origin_base:
+		_spawn_origin_base()
 
 	if enable_plane:
 		# Defer so the terrain collision exists when the plane raycasts for
@@ -153,20 +159,31 @@ func add_plane_to_scene():
 	var plane = plane_packed.instantiate()
 	plane.name = "BushPlane"
 
-	var spawn_origin = Vector3.ZERO
-	if has_node("Player"):
-		spawn_origin = $Player.global_position + plane_spawn_offset
+	var spawn_origin: Vector3
+	if enable_origin_base:
+		# Park at the south end of the runway, pointed down it. The plane's
+		# forward axis is −Z, so no rotation is needed.
+		spawn_origin = Vector3(0.0, World.BASE_HEIGHT + 1.5, World.BASE_HALF_LENGTH - 10.0)
 	else:
-		spawn_origin = plane_spawn_offset
-
-	var spawn_height = get_ground_height(spawn_origin)
-	if spawn_height != null:
-		spawn_origin.y = spawn_height + 1.5
-	else:
-		spawn_origin.y = max(water_level + 2.0, 5.0)
+		# Fallback: offset from player with a terrain probe.
+		var base_origin: Vector3 = plane_spawn_offset
+		if has_node("Player"):
+			base_origin = $Player.global_position + plane_spawn_offset
+		var ground = get_ground_height(base_origin)
+		base_origin.y = (ground + 1.5) if ground != null else max(water_level + 2.0, 5.0)
+		spawn_origin = base_origin
 
 	plane.global_transform = Transform3D(Basis.IDENTITY, spawn_origin)
 	add_child(plane)
+
+func _spawn_origin_base() -> void:
+	var base_packed := load("res://OriginBase.tscn") as PackedScene
+	if base_packed == null:
+		push_warning("TerrainGenerator: OriginBase.tscn failed to load")
+		return
+	var base := base_packed.instantiate()
+	base.name = "OriginBase"
+	add_child(base)
 
 func get_ground_height(position: Vector3):
 	if not is_inside_tree():
@@ -269,9 +286,10 @@ func _build_chunk_on_worker(chunk_pos: Vector2) -> void:
 		for x in range(chunk_size + 1):
 			var gx: float = world_pos_x + x
 			var gz: float = world_pos_z + z
-			var pos_biome: int = determine_biome(Vector2(gx, gz))
-			var base_h: float = noise.get_noise_2d(gx * noise_scale, gz * noise_scale) * amplitude
-			var y: float = apply_biome_height_adjustments(base_h, pos_biome, Vector2(gx, gz))
+			# get_terrain_height handles base flattening in one place so
+			# player spawn / tree placement / chunk mesh all agree on
+			# ground elevation.
+			var y: float = get_terrain_height(gx, gz)
 			vertices[offset] = Vector3(x, y, z)
 			offset += 1
 
@@ -381,14 +399,25 @@ func remove_terrain_chunk(chunk_pos: Vector2):
 
 # Analytical terrain height at a world XZ point. Matches the noise logic
 # used during chunk generation so subsystems can query without raycasting.
+# Inside the base footprint we blend toward BASE_HEIGHT so the runway
+# and cabin always have flat ground to sit on, regardless of seed.
 func get_terrain_height(x: float, z: float) -> float:
 	var base := noise.get_noise_2d(x * noise_scale, z * noise_scale) * amplitude
 	var biome := determine_biome(Vector2(x, z))
-	return apply_biome_height_adjustments(base, biome, Vector2(x, z))
+	var natural: float = apply_biome_height_adjustments(base, biome, Vector2(x, z))
+	if typeof(World) != TYPE_NIL:
+		var blend: float = World.base_flatten_blend(x, z)
+		if blend > 0.0:
+			return lerp(natural, World.BASE_HEIGHT, blend)
+	return natural
 
 
 # Determine biome based on position
 func determine_biome(world_position: Vector2) -> int:
+	# Force forest around the origin so the base always sits in a cozy
+	# green patch, regardless of what the biome noise rolled.
+	if typeof(World) != TYPE_NIL and World.is_in_base_biome(world_position.x, world_position.y):
+		return BiomeType.TEMPERATE_FOREST
 	if not enable_biomes:
 		return BiomeType.TEMPERATE_FOREST
 	
@@ -596,13 +625,16 @@ func add_player_to_scene():
 		return
 	var player := player_packed.instantiate()
 	player.name = "Player"
-	# Probe the analytical terrain height so we spawn ON the ground, not
-	# at a hardcoded 50 m that may be above or below actual terrain.
+
+	# Spawn next to the cabin door (cabin is at +15 X, -5 Z from origin;
+	# door faces −Z). If the base is disabled, fall back to origin.
+	var spawn_x: float = 15.0 if enable_origin_base else 0.0
+	var spawn_z: float = -10.0 if enable_origin_base else 0.0
+	var ground_h: float = get_terrain_height(spawn_x, spawn_z)
 	# Extra clearance so collision has time to arrive from the worker-
 	# thread chunk build before gravity closes the gap.
-	var ground_h: float = get_terrain_height(0.0, 0.0)
 	var spawn_y: float = max(ground_h, water_level) + 12.0
-	player.position = Vector3(0.0, spawn_y, 0.0)
+	player.position = Vector3(spawn_x, spawn_y, spawn_z)
 	add_child(player)
 
 	var stray_cam := get_node_or_null("Camera3D")

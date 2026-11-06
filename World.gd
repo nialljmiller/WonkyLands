@@ -87,6 +87,39 @@ func get_terrain_height(x: float, z: float) -> float:
 	return 0.0
 
 # ---------------------------------------------------------------------
+# Base footprint — the deterministic "home" area at the world origin.
+# Terrain is flattened and biome is forced inside this footprint so the
+# runway + cabin always sit on cozy flat forest regardless of seed. The
+# constants are the single source of truth; TerrainGenerator queries
+# them to flatten, TreeSystem queries them to skip placement, and
+# OriginBase uses them for layout.
+# ---------------------------------------------------------------------
+const BASE_HALF_WIDTH: float = 10.0        # X half-extent of flat area
+const BASE_HALF_LENGTH: float = 70.0       # Z half-extent (runway runs along Z)
+const BASE_HEIGHT: float = 2.0             # terrain elevation inside the footprint
+const BASE_BLEND_MARGIN: float = 15.0      # smooth fade from BASE_HEIGHT to natural
+const BASE_BIOME_RADIUS: float = 100.0     # forest-biome override radius (squared check)
+
+func is_in_base_core(x: float, z: float) -> bool:
+	return abs(x) <= BASE_HALF_WIDTH and abs(z) <= BASE_HALF_LENGTH
+
+func base_flatten_blend(x: float, z: float) -> float:
+	# Returns 0..1: 1 inside the core, 0 beyond the blend margin, smooth
+	# in between. Callers lerp(natural_height, BASE_HEIGHT, blend).
+	var dx: float = max(abs(x) - BASE_HALF_WIDTH, 0.0)
+	var dz: float = max(abs(z) - BASE_HALF_LENGTH, 0.0)
+	if dx > BASE_BLEND_MARGIN or dz > BASE_BLEND_MARGIN:
+		return 0.0
+	var fx: float = dx / BASE_BLEND_MARGIN
+	var fz: float = dz / BASE_BLEND_MARGIN
+	return 1.0 - smoothstep(0.0, 1.0, max(fx, fz))
+
+func is_in_base_biome(x: float, z: float) -> bool:
+	# Slightly larger than the flatten area so biome texturing doesn't
+	# show a seam right at the edge of the runway.
+	return (x * x + z * z) <= (BASE_BIOME_RADIUS * BASE_BIOME_RADIUS)
+
+# ---------------------------------------------------------------------
 # Event broadcasting — subsystems emit through World so everyone sees
 # the same event stream (no peer-to-peer signal wiring needed).
 # ---------------------------------------------------------------------

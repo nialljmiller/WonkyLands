@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://cq7kobmaplwye"]
+
+[ext_resource type="Script" path="res://OriginBase.gd" id="1_base"]
+
+[node name="OriginBase" type="Node3D"]
+script = ExtResource("1_base")
