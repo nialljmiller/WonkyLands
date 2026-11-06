@@ -35,6 +35,10 @@ var loaded_chunks = {}  # Dictionary to store active chunks
 var current_chunk = Vector2.ZERO  # Current chunk the player is in
 var tree_system = null
 
+# Chunk coords that have a worker task in flight — we don't double-queue
+# them, and the main-thread finalize checks this before adding the node.
+var _pending_chunks: Dictionary = {}
+
 # Biome types
 enum BiomeType {
 	TEMPERATE_FOREST,
@@ -235,142 +239,137 @@ func update_terrain_chunks(player_pos: Vector3):
 	for chunk_pos in chunks_to_remove:
 		remove_terrain_chunk(chunk_pos)
 
-# Generates a single terrain chunk
+# Generates a single terrain chunk. The heavy math (vertex grid,
+# normals, triangle list) runs on a worker thread via WorkerThreadPool;
+# scene-tree ops happen in _finalize_chunk on the main thread. This
+# eliminates the frame spike on chunk boundary crossings.
 func generate_terrain_chunk(chunk_pos: Vector2):
-	# Calculate world position for this chunk
-	var world_pos_x = chunk_pos.x * chunk_size
-	var world_pos_z = chunk_pos.y * chunk_size
-	
-	# Create container node for the chunk
-	var chunk_node = Node3D.new()
-	chunk_node.name = "Chunk_%d_%d" % [chunk_pos.x, chunk_pos.y]
-	add_child(chunk_node)
+	if _pending_chunks.has(chunk_pos) or loaded_chunks.has(chunk_pos):
+		return
+	_pending_chunks[chunk_pos] = true
+	WorkerThreadPool.add_task(
+		Callable(self, "_build_chunk_on_worker").bind(chunk_pos),
+		false,
+		"wonkylands.chunk.%d.%d" % [chunk_pos.x, chunk_pos.y]
+	)
 
-	# Create mesh data structures
-	var mesh = ArrayMesh.new()
+# Runs on a worker thread. FastNoiseLite and the local math here are
+# safe for concurrent reads; we never touch the scene tree from here.
+func _build_chunk_on_worker(chunk_pos: Vector2) -> void:
+	var world_pos_x: float = chunk_pos.x * chunk_size
+	var world_pos_z: float = chunk_pos.y * chunk_size
+	var chunk_center := Vector2(world_pos_x + chunk_size / 2.0, world_pos_z + chunk_size / 2.0)
+	var dominant_biome: int = determine_biome(chunk_center)
 
-	# Prepare vertex storage for the heightmap grid
-	var vertex_count = (chunk_size + 1) * (chunk_size + 1)
+	var vertex_count: int = (chunk_size + 1) * (chunk_size + 1)
 	var vertices := PackedVector3Array()
 	vertices.resize(vertex_count)
-	var vertex_offset = 0
-	
-	# Determine dominant biome for this chunk
-	var chunk_center = Vector2(
-		world_pos_x + chunk_size/2.0, 
-		world_pos_z + chunk_size/2.0
-	)
-	var dominant_biome = determine_biome(chunk_center)
+	var offset: int = 0
+	for z in range(chunk_size + 1):
+		for x in range(chunk_size + 1):
+			var gx: float = world_pos_x + x
+			var gz: float = world_pos_z + z
+			var pos_biome: int = determine_biome(Vector2(gx, gz))
+			var base_h: float = noise.get_noise_2d(gx * noise_scale, gz * noise_scale) * amplitude
+			var y: float = apply_biome_height_adjustments(base_h, pos_biome, Vector2(gx, gz))
+			vertices[offset] = Vector3(x, y, z)
+			offset += 1
 
-# Generate vertices for this chunk
-	for z in range(chunk_size + 1):  # +1 to avoid seams between chunks
-			for x in range(chunk_size + 1):
-					# Calculate global position
-					var global_x = world_pos_x + x
-					var global_z = world_pos_z + z
-
-					# Calculate biome at this position for height adjustments
-					var pos_biome = determine_biome(Vector2(global_x, global_z))
-
-					# Calculate height using noise
-					var base_height = noise.get_noise_2d(global_x * noise_scale, global_z * noise_scale) * amplitude
-
-					# Adjust height based on biome
-					var y = apply_biome_height_adjustments(base_height, pos_biome, Vector2(global_x, global_z))
-
-					# Store vertex (in local chunk coordinates)
-					vertices[vertex_offset] = Vector3(x, y, z)
-					vertex_offset += 1
-
-	# Build triangle indices for the grid
 	var indices := PackedInt32Array()
 	for z in range(chunk_size):
-			for x in range(chunk_size):
-					var i = z * (chunk_size + 1) + x
-					var right = i + 1
-					var below = i + (chunk_size + 1)
-					var below_right = below + 1
+		for x in range(chunk_size):
+			var i: int = z * (chunk_size + 1) + x
+			var right: int = i + 1
+			var below: int = i + (chunk_size + 1)
+			var below_right: int = below + 1
+			indices.append(i)
+			indices.append(right)
+			indices.append(below)
+			indices.append(right)
+			indices.append(below_right)
+			indices.append(below)
 
-					# First triangle
-					indices.append(i)
-					indices.append(right)
-					indices.append(below)
-
-					# Second triangle
-					indices.append(right)
-					indices.append(below_right)
-					indices.append(below)
-
-	# Calculate smooth normals from the generated triangles
 	var normals := PackedVector3Array()
 	normals.resize(vertex_count)
-	for n in range(normals.size()):
-			normals[n] = Vector3.ZERO
-
+	for n in range(vertex_count):
+		normals[n] = Vector3.ZERO
 	for t in range(0, indices.size(), 3):
-			var idx0 = indices[t]
-			var idx1 = indices[t + 1]
-			var idx2 = indices[t + 2]
+		var i0: int = indices[t]
+		var i1: int = indices[t + 1]
+		var i2: int = indices[t + 2]
+		var face_n: Vector3 = (vertices[i1] - vertices[i0]).cross(vertices[i2] - vertices[i0])
+		if face_n.length_squared() == 0.0:
+			continue
+		normals[i0] += face_n
+		normals[i1] += face_n
+		normals[i2] += face_n
+	for n in range(vertex_count):
+		var acc: Vector3 = normals[n]
+		normals[n] = acc.normalized() if acc.length_squared() > 0.0 else Vector3.UP
 
-			var v0 = vertices[idx0]
-			var v1 = vertices[idx1]
-			var v2 = vertices[idx2]
+	# Pre-expand collision faces (indexed triangles → triangle list) on
+	# the worker so the main thread just hands them to the shape.
+	var faces := PackedVector3Array()
+	faces.resize(indices.size())
+	for i in range(0, indices.size(), 3):
+		faces[i]     = vertices[indices[i]]
+		faces[i + 1] = vertices[indices[i + 1]]
+		faces[i + 2] = vertices[indices[i + 2]]
 
-			var face_normal = (v1 - v0).cross(v2 - v0)
-			if face_normal.length_squared() == 0.0:
-					continue
+	call_deferred("_finalize_chunk", chunk_pos, world_pos_x, world_pos_z, dominant_biome,
+		vertices, indices, normals, faces)
 
-			var n0 = normals[idx0]
-			n0 += face_normal
-			normals[idx0] = n0
+func _finalize_chunk(chunk_pos: Vector2, world_pos_x: float, world_pos_z: float, biome: int,
+		vertices: PackedVector3Array, indices: PackedInt32Array,
+		normals: PackedVector3Array, faces: PackedVector3Array) -> void:
+	# Player may have moved out of range while this chunk was building.
+	# If so, drop the result instead of adding geometry that'll be freed
+	# next tick anyway.
+	_pending_chunks.erase(chunk_pos)
+	if not _chunk_is_still_wanted(chunk_pos):
+		return
+	if loaded_chunks.has(chunk_pos):
+		return
 
-			var n1 = normals[idx1]
-			n1 += face_normal
-			normals[idx1] = n1
+	var chunk_node := Node3D.new()
+	chunk_node.name = "Chunk_%d_%d" % [chunk_pos.x, chunk_pos.y]
+	chunk_node.position = Vector3(world_pos_x, 0, world_pos_z)
+	add_child(chunk_node)
 
-			var n2 = normals[idx2]
-			n2 += face_normal
-			normals[idx2] = n2
-
-	for n in range(normals.size()):
-			var accumulated = normals[n]
-			if accumulated.length_squared() > 0.0:
-					normals[n] = accumulated.normalized()
-			else:
-					normals[n] = Vector3.UP
-
-	# Assemble mesh surface arrays
-	var arrays = []
+	var mesh := ArrayMesh.new()
+	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = vertices
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_INDEX] = indices
-
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	
-	# Create mesh instance
-	var mesh_instance = MeshInstance3D.new()
-	mesh_instance.mesh = mesh
-	
-	# Position the chunk
-	chunk_node.position = Vector3(world_pos_x, 0, world_pos_z)
-	
-	# Add mesh to chunk
-	chunk_node.add_child(mesh_instance)
-	
-	# Add collision BEFORE placing trees
-	add_chunk_collision(chunk_node, mesh)
-	
-	# Apply biome-based texturing
-	apply_biome_texturing(mesh_instance, dominant_biome)
-	
-	# Store chunk in dictionary
-	loaded_chunks[chunk_pos] = chunk_node
 
-	# Broadcast chunk-load so subsystems (trees, fish, future stuff) can
-	# hook in without TerrainGenerator needing to know about them.
+	var mesh_instance := MeshInstance3D.new()
+	mesh_instance.mesh = mesh
+	chunk_node.add_child(mesh_instance)
+
+	var body := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	var shape := ConcavePolygonShape3D.new()
+	shape.set_faces(faces)
+	cs.shape = shape
+	body.add_child(cs)
+	chunk_node.add_child(body)
+
+	apply_biome_texturing(mesh_instance, biome)
+
+	loaded_chunks[chunk_pos] = chunk_node
 	if typeof(World) != TYPE_NIL:
 		World.notify_chunk_loaded(chunk_pos, chunk_node)
+
+func _chunk_is_still_wanted(chunk_pos: Vector2) -> bool:
+	var player: Node3D = null
+	if typeof(World) != TYPE_NIL:
+		player = World.get_player()
+	var player_pos: Vector3 = player.global_position if player else Vector3.ZERO
+	var pcx: float = floor(player_pos.x / chunk_size)
+	var pcz: float = floor(player_pos.z / chunk_size)
+	return abs(chunk_pos.x - pcx) <= view_distance and abs(chunk_pos.y - pcz) <= view_distance
 
 # Removes a chunk that's outside the view distance
 func remove_terrain_chunk(chunk_pos: Vector2):
@@ -387,29 +386,6 @@ func get_terrain_height(x: float, z: float) -> float:
 	var biome := determine_biome(Vector2(x, z))
 	return apply_biome_height_adjustments(base, biome, Vector2(x, z))
 
-# Adds collision to a chunk
-func add_chunk_collision(chunk_node: Node3D, mesh: ArrayMesh):
-	var static_body = StaticBody3D.new()
-	var collision_shape = CollisionShape3D.new()
-	var shape = ConcavePolygonShape3D.new()
-
-	# Extract mesh data
-	var mesh_arrays = mesh.surface_get_arrays(0)
-	var vertices = mesh_arrays[Mesh.ARRAY_VERTEX]
-	var indices = mesh_arrays[Mesh.ARRAY_INDEX]
-
-	# Create face array (array of Vector3 points forming triangles)
-	var faces = PackedVector3Array()
-	for i in range(0, indices.size(), 3):
-		faces.append(vertices[indices[i]])
-		faces.append(vertices[indices[i+1]])
-		faces.append(vertices[indices[i+2]])
-
-	shape.set_faces(faces)
-
-	collision_shape.shape = shape
-	static_body.add_child(collision_shape)
-	chunk_node.add_child(static_body)
 
 # Determine biome based on position
 func determine_biome(world_position: Vector2) -> int:
@@ -622,8 +598,10 @@ func add_player_to_scene():
 	player.name = "Player"
 	# Probe the analytical terrain height so we spawn ON the ground, not
 	# at a hardcoded 50 m that may be above or below actual terrain.
+	# Extra clearance so collision has time to arrive from the worker-
+	# thread chunk build before gravity closes the gap.
 	var ground_h: float = get_terrain_height(0.0, 0.0)
-	var spawn_y: float = max(ground_h, water_level) + 2.0
+	var spawn_y: float = max(ground_h, water_level) + 12.0
 	player.position = Vector3(0.0, spawn_y, 0.0)
 	add_child(player)
 
