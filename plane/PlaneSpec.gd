@@ -175,10 +175,9 @@ static func make_starter_cessna() -> Variant:
 	h_right.incidence_deg = -2.0
 	h_right.strips = 4
 	h_right.surface_input = "pitch"
-	# Positive pitch input = nose-down command. Elevator up → tail up → nose down.
-	# "Elevator up" means trailing edge deflects up → effective AoA on stab goes down → less downforce (or more upforce) → tail goes up → nose down.
-	# So pitch-input positive should REDUCE Cl on the stab, i.e. negative surface_sign.
-	h_right.surface_sign = -1.0
+	# Positive pitch input (S key) = nose-down command. Tail must rise.
+	# For the tail to rise, the stab needs more upward lift, so ΔCl > 0.
+	h_right.surface_sign = 1.0
 	h_right.surface_span_start = 0.0
 	h_right.surface_span_end = 1.0
 	h_right.surface_max_deflection_deg = 25.0
@@ -195,29 +194,30 @@ static func make_starter_cessna() -> Variant:
 	h_left.incidence_deg = -2.0
 	h_left.strips = 4
 	h_left.surface_input = "pitch"
-	h_left.surface_sign = -1.0
+	h_left.surface_sign = 1.0
 	h_left.surface_span_start = 0.0
 	h_left.surface_span_end = 1.0
 	h_left.surface_max_deflection_deg = 25.0
 	h_left.surface_effectiveness = 0.55
 	spec.wings.append(h_left)
 
-	# Vertical stabilizer — modeled as a wing with span going UP, so its
-	# "AoA" responds to sideslip β instead of plane AoA. This gives us
-	# weathervaning / yaw stability for free. It also carries the rudder.
+	# Vertical stabilizer — span along +Y (up), lift_axis along +X so
+	# "AoA" responds to sideslip. At β > 0 (nose yawed right of velocity,
+	# air hitting plane's right side) the v-stab sees velocity with +X
+	# component → negative AoA → lift in −X → force pushes tail left →
+	# yaws nose right → aligned with velocity. Natural weathervaning.
 	var v_stab = Wing.new()
 	v_stab.name = "VStab"
 	v_stab.airfoil = tail_airfoil
 	v_stab.root_pos = Vector3(0.0, h_y + spec.v_stab_height * 0.1, h_z)
-	v_stab.span_direction = Vector3(0, 1, 0)     # straight up
+	v_stab.span_direction = Vector3(0, 1, 0)
+	v_stab.lift_axis = Vector3(1, 0, 0)
+	v_stab.chord_axis = Vector3(0, 0, 1)
 	v_stab.span = spec.v_stab_height
 	v_stab.chord = spec.v_stab_chord
 	v_stab.incidence_deg = 0.0
 	v_stab.strips = 4
 	v_stab.surface_input = "yaw"
-	# Positive yaw input = yaw right. Rudder deflects right → side force → tail pushes left → nose yaws right.
-	# Side force direction depends on how the wing orientation ends up. Empirically positive sign works here;
-	# this gets flipped in testing if needed.
 	v_stab.surface_sign = 1.0
 	v_stab.surface_span_start = 0.0
 	v_stab.surface_span_end = 1.0

@@ -24,9 +24,11 @@ var name: String = "wing"
 var airfoil = null                        # Airfoil
 var root_pos: Vector3 = Vector3.ZERO      # plane-local, strip generation starts here
 var span_direction: Vector3 = Vector3(1, 0, 0)
+var lift_axis: Vector3 = Vector3(0, 1, 0)   # "up" relative to this wing — where positive lift points at AoA=0
+var chord_axis: Vector3 = Vector3(0, 0, 1)  # aft direction (trailing edge direction)
 var span: float = 5.0                     # length along span_direction
 var chord: float = 1.6                    # fore-aft dimension
-var incidence_deg: float = 1.0            # positive = leading edge up
+var incidence_deg: float = 1.0            # positive = leading edge up (rotation about span_direction)
 var strips: int = 8
 var mirror: bool = false                  # true for the left wing — flips roll-input sign of surfaces
 
@@ -63,11 +65,13 @@ func accumulate_forces(
 	var span_dir: Vector3 = span_direction.normalized()
 	var incidence: float = deg_to_rad(incidence_deg)
 
-	# Wing-local axes: we treat the chord direction as plane-Z and the
-	# lift direction as rotated from plane-Y by the incidence angle about
-	# the span axis. For strip force computation we project velocity onto
-	# the chord plane (ignoring spanwise component, which produces no
-	# lift and essentially no drag in this model).
+	# Wing-local axes rotated by incidence about the span. For a standard
+	# horizontal right wing with lift_axis=+Y and chord_axis=+Z, positive
+	# incidence tilts the chord up (leading edge rises). For a vertical
+	# stabilizer with lift_axis=+X and chord_axis=+Z, incidence at 0 is
+	# the normal case (symmetric, no built-in AoA).
+	var chord_dir: Vector3 = chord_axis.rotated(span_dir, -incidence).normalized()
+	var lift_dir: Vector3  = lift_axis.rotated(span_dir, -incidence).normalized()
 
 	for i in range(strips):
 		var dist_along_span: float = (i + 0.5) * strip_span
@@ -83,22 +87,17 @@ func accumulate_forces(
 		var v_span: float = v_at_strip.dot(span_dir)
 		var v_normal: Vector3 = v_at_strip - span_dir * v_span
 
-		# Build a wing-chord frame: chord_dir is plane-local +Z rotated by
-		# incidence about the span axis; lift_dir is +Y rotated by the same.
-		var chord_dir: Vector3 = Vector3(0, -sin(incidence), cos(incidence))
-		var lift_dir: Vector3 = Vector3(0, cos(incidence), sin(incidence))
-
 		# Velocity components in wing frame:
 		var v_chord: float = v_normal.dot(chord_dir)          # aft (+) / fwd (−)
-		var v_lift: float  = v_normal.dot(lift_dir)           # down (+) / up (−)
+		var v_lift: float  = v_normal.dot(lift_dir)           # toward lift_axis (+) / away (−)
 		var v_mag_sq: float = v_chord * v_chord + v_lift * v_lift
 		if v_mag_sq < 0.01:
 			continue
 		var v_mag: float = sqrt(v_mag_sq)
 
-		# Angle of attack: velocity vector relative to the chord.
-		# Forward motion = -v_chord > 0; positive AoA when v_lift < 0
-		# (air coming from below the wing).
+		# Angle of attack: velocity vector relative to the chord. For a
+		# wing moving in -chord (forward) with a dip toward -lift (air
+		# coming from +lift side), AoA is positive.
 		var aoa: float = atan2(-v_lift, -v_chord)
 
 		# Control surface contribution: if this strip falls within the
@@ -126,10 +125,12 @@ func accumulate_forces(
 		var drag_mag: float = q * strip_area * cd
 
 		# Lift direction: perpendicular to local velocity in the chord-
-		# lift plane, pointing "upward" (away from the oncoming air).
+		# lift plane, pointing in the +lift_axis sense when AoA > 0.
+		# Starting from vel_dir and rotating 90° toward +lift_axis gives
+		# (chord_dir * v_lift − lift_dir * v_chord) / v_mag  — the sign
+		# that puts lift upward on a wing at positive AoA moving forward.
 		var vel_dir: Vector3 = (chord_dir * v_chord + lift_dir * v_lift) / v_mag
-		# Perpendicular to velocity, in the chord/lift plane, opposing v_lift:
-		var local_lift_dir: Vector3 = (lift_dir * v_chord - chord_dir * v_lift) / v_mag
+		var local_lift_dir: Vector3 = (chord_dir * v_lift - lift_dir * v_chord) / v_mag
 
 		var strip_force: Vector3 = local_lift_dir * lift_mag + (-vel_dir) * drag_mag
 		force_accum += strip_force
