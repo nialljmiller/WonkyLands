@@ -1,68 +1,38 @@
 extends CharacterBody3D
 class_name PlaneController
-## Pilotable bush plane.
+## Blade-element flight model driven by a PlaneSpec resource.
 ##
-## Aerodynamics: lift-curve with smooth post-stall roll-off, induced drag
-## from aspect ratio, sideslip side force, stability derivatives in pitch/
-## yaw/roll. On top of that: ground effect, P-factor, propeller torque
-## reaction, propwash over the tail, flaps, and density altitude.
+## Each physics tick:
+##   1. Read inputs → update throttle + per-wing control_input.
+##   2. Compute total aero force/torque by iterating every wing and
+##      accumulating each strip's local lift + drag.
+##   3. Add engine thrust, P-factor yaw moment, torque reaction roll
+##      moment, fuselage parasitic drag, and gravity.
+##   4. Linear: a = F / m. Angular: α = I⁻¹ · τ (diagonal tensor).
+##   5. Integrate; apply to CharacterBody3D.
 ##
-## Visuals are assembled in code (no monster .tscn) with separate control
-## surfaces that actually deflect from input. The scene file just carries
-## collision + entry area + seat/camera markers.
+## No scalar `angular_damping` constant and no hard max-angular-speed
+## clamp — rotational damping emerges from the blade-element math (a
+## rolling wing sees different AoA on each side).
+
+const PlaneSpec = preload("res://plane/PlaneSpec.gd")
 
 # =====================================================================
-# TUNABLES
+# TUNABLES (coarse — fine tuning lives in the PlaneSpec)
 # =====================================================================
-@export_category("Mass & geometry")
-@export var mass: float = 1200.0
-@export var wing_area: float = 16.0
-@export var wing_span: float = 10.5
-@export var air_density_sea_level: float = 1.225
-@export var density_scale_height: float = 8500.0   # m, exponential falloff
-
 @export_category("Engine")
-@export var max_thrust: float = 26000.0
 @export var throttle_response: float = 1.8
 
-@export_category("Aero — base")
-@export var lift_curve_slope: float = 5.5
-@export var max_lift_coefficient: float = 1.4
-@export var base_drag_coefficient: float = 0.035
-@export var induced_drag_factor: float = 0.045
-@export var side_force_coefficient: float = 0.7
-@export var stall_angle_deg: float = 16.0
-@export var stall_recovery_angle_deg: float = 28.0
-@export var stall_drag_multiplier: float = 4.0
-@export var min_control_effectiveness: float = 0.2
-@export var takeoff_speed: float = 32.0
+@export_category("Atmosphere")
+@export var air_density_sea_level: float = 1.225
 
 @export_category("Ground effect")
 @export var ground_effect_enabled: bool = true
-@export var ground_effect_max_bonus: float = 0.3    # +30% lift at wheel height
-@export var ground_effect_height_frac: float = 0.5  # fades out at (wingspan * this) above terrain
-
-@export_category("Propeller effects")
-@export var p_factor_gain: float = 0.6              # yaw moment per rad of AoA at full throttle
-@export var torque_reaction_gain: float = 0.45      # roll moment at full throttle
-@export var propwash_gain: float = 0.6              # fraction of control authority preserved by throttle at low airspeed
+@export var ground_effect_max_bonus: float = 0.3
+@export var ground_effect_height_frac: float = 0.5
 
 @export_category("Flaps")
-@export var flap_deploy_speed: float = 0.8          # 0→1 in 1.25 s
-@export var flap_cl_bonus: float = 0.6              # added to max_lift_coefficient when fully deployed
-@export var flap_drag_bonus: float = 0.045          # added to drag coefficient when fully deployed
-@export var flap_pitch_down_moment: float = 0.15    # nose-down torque from deploying flaps
-
-@export_category("Controls")
-@export var elevator_authority: float = 2.6
-@export var rudder_authority: float = 2.0
-@export var aileron_authority: float = 3.0
-@export var angular_damping: float = 1.6
-@export var pitch_stability: float = 0.8
-@export var yaw_stability: float = 1.2
-@export var roll_stability: float = 1.1
-@export var max_angular_speed: float = 3.5
-@export var ground_alignment_speed: float = 3.0
+@export var flap_deploy_speed: float = 0.8
 
 @export_category("Ground / taxi")
 @export var taxi_max_speed: float = 12.0
@@ -70,6 +40,7 @@ class_name PlaneController
 @export var brake_force: float = 9000.0
 @export var ground_lateral_damp: float = 6.0
 @export var ground_long_damp: float = 1.2
+@export var takeoff_speed: float = 32.0
 
 @export_category("Misc")
 @export var idle_gravity_force: float = 18.0
@@ -84,17 +55,21 @@ class_name PlaneController
 # =====================================================================
 # STATE
 # =====================================================================
+var spec: Variant = null
+
 var throttle: float = 0.0
 var current_speed: float = 0.0
-var angular_velocity: Vector3 = Vector3.ZERO
 
 var input_pitch: float = 0.0
 var input_yaw: float = 0.0
 var input_roll: float = 0.0
 var input_brake: float = 0.0
 
-var flap_deployed: float = 0.0        # animated 0..1
+var flap_deployed: float = 0.0
 var _flap_target: float = 0.0
+
+# Plane-local angular velocity in rad/s, components (pitch, yaw, roll).
+var angular_velocity_local: Vector3 = Vector3.ZERO
 
 var controlling_player: CharacterBody3D = null
 var nearby_player: CharacterBody3D = null
@@ -135,6 +110,7 @@ func _ready() -> void:
 	seat_marker = $Seat
 	entry_area.body_entered.connect(_on_entry_body_entered)
 	entry_area.body_exited.connect(_on_entry_body_exited)
+	spec = PlaneSpec.make_starter_cessna()
 	_init_materials()
 	_build_visuals()
 
@@ -142,6 +118,7 @@ func _physics_process(delta: float) -> void:
 	_update_flaps(delta)
 	_update_propeller(delta)
 	_update_control_surface_visuals()
+
 	if controlling_player != null:
 		_attach_player_to_seat()
 		_handle_flight_input(delta)
@@ -170,143 +147,148 @@ func _handle_flight_input(delta: float) -> void:
 func _update_flaps(delta: float) -> void:
 	flap_deployed = move_toward(flap_deployed, _flap_target, flap_deploy_speed * delta)
 
+func _push_control_inputs_to_spec() -> void:
+	# Map our input_* to each wing's control_input, respecting the
+	# sign already baked into the wing's surface_sign.
+	for wing in spec.wings:
+		match wing.surface_input:
+			"pitch":
+				wing.control_input = input_pitch
+			"roll":
+				wing.control_input = input_roll
+			"yaw":
+				wing.control_input = input_yaw
+			"flaps":
+				wing.control_input = flap_deployed
+			_:
+				wing.control_input = 0.0
+
 # =====================================================================
-# FLIGHT PHYSICS
+# FLIGHT PHYSICS (blade-element)
 # =====================================================================
 func _apply_flight_physics(delta: float) -> void:
+	_push_control_inputs_to_spec()
+
 	var basis: Basis = global_transform.basis
 	var fwd: Vector3 = -basis.z
-	var right: Vector3 = basis.x
 
-	var speed: float = velocity.length()
+	# Plane-local velocity: everything downstream is cleaner in body frame.
+	var v_world: Vector3 = velocity
+	var v_local: Vector3 = basis.inverse() * v_world
+	var speed: float = v_local.length()
 	current_speed = speed
 
-	# Density altitude: air density falls off with height. Affects both
-	# thrust (less air for the prop to bite) and aero forces.
+	# Density altitude: exponential falloff
 	var altitude: float = max(global_position.y, 0.0)
-	var rho: float = air_density_sea_level * exp(-altitude / density_scale_height)
-	var thrust_density_scale: float = rho / air_density_sea_level
+	var air_density: float = air_density_sea_level * exp(-altitude / spec.engine.density_scale_height)
 
-	# ---------- Taxi mode: low speed on ground, keyboard-steerable ----------
+	# ---------- Taxi mode on ground at low speed ----------
 	if is_on_floor() and speed < taxi_max_speed * 1.3:
-		var v_long: float = velocity.dot(fwd)
-		var v_side: float = velocity.dot(right)
-
-		var F_engine: Vector3 = fwd * (max_thrust * throttle * thrust_density_scale)
-		var brake_limit: float = brake_force * input_brake
-		var F_brake_mag: float = min(abs(v_long) * mass * ground_long_damp, brake_limit)
-		var F_brake: Vector3 = Vector3.ZERO
-		if F_brake_mag > 0.0:
-			F_brake = -sign(v_long) * F_brake_mag * fwd
-		var F_lat: Vector3 = -v_side * mass * ground_lateral_damp * right
-
-		var cap: float = taxi_max_speed + 4.0 * (1.0 - input_brake)
-		if speed > cap:
-			F_engine = Vector3.ZERO
-
-		var steer_cmd: float = clamp(input_yaw + 0.3 * input_roll, -1.0, 1.0)
-		rotate_y(steer_cmd * taxi_steer_gain * delta)
-
-		var F_total: Vector3 = F_engine + F_brake + F_lat + Vector3.DOWN * 9.81 * mass
-		velocity += (F_total / mass) * delta
-		angular_velocity = angular_velocity.lerp(Vector3.ZERO, 8.0 * delta)
+		_apply_taxi_physics(delta, v_local, fwd, basis, air_density)
 		return
 
 	# ---------- Air mode ----------
-	# Control effectiveness normally falls off at low airspeed, but
-	# propwash over the tail preserves authority when the throttle is up.
-	# Propwash contribution scales with throttle and fades with forward
-	# speed (at high speed the free-stream dominates anyway).
-	var control_eff: float = 1.0
-	if takeoff_speed > 0.0:
-		control_eff = lerp(min_control_effectiveness, 1.0, clamp(speed / takeoff_speed, 0.0, 1.0))
-	var propwash_boost: float = throttle * propwash_gain * (1.0 - clamp(speed / takeoff_speed, 0.0, 1.0))
-	control_eff = clamp(control_eff + propwash_boost, 0.0, 1.0)
-
-	var v_local: Vector3 = basis.inverse() * velocity
+	# AoA used for P-factor (lumped whole-plane AoA — the per-strip AoAs
+	# are computed independently inside each wing).
 	var aoa: float = 0.0
-	var beta: float = 0.0
 	if speed > 0.5:
 		aoa = atan2(v_local.y, -v_local.z)
-		beta = asin(clamp(v_local.x / speed, -1.0, 1.0))
 
-	# Stall roll-off
-	var stall_blend: float = 1.0
-	var aoa_deg: float = rad_to_deg(aoa)
-	if abs(aoa_deg) > stall_angle_deg:
-		var recovery: float = max(stall_recovery_angle_deg - stall_angle_deg, 1.0)
-		var over: float = min(abs(aoa_deg) - stall_angle_deg, recovery)
-		stall_blend = clamp(1.0 - over / recovery, 0.0, 1.0)
-
-	var cl_max_now: float = max_lift_coefficient + flap_cl_bonus * flap_deployed
-	var cl: float = clamp(lift_curve_slope * aoa, -cl_max_now, cl_max_now) * stall_blend
-
-	# Ground effect — proximity to terrain boosts lift up to ~half span.
+	# Ground effect — proximity to terrain. One number applied to every
+	# wing strip (approximating the whole plane as being at CG altitude).
 	var ge_bonus: float = 0.0
 	if ground_effect_enabled and typeof(World) != TYPE_NIL:
 		var ground_h: float = World.get_terrain_height(global_position.x, global_position.z)
-		var height_agl: float = max(global_position.y - ground_h, 0.0)
-		var ge_range: float = wing_span * ground_effect_height_frac
-		if ge_range > 0.0 and height_agl < ge_range:
-			# 1 at the deck, 0 at the fade-out height, smooth in between.
-			var t: float = clamp(1.0 - height_agl / ge_range, 0.0, 1.0)
+		var h_agl: float = max(global_position.y - ground_h, 0.0)
+		var ge_range: float = spec.wing_span_for_ground_effect * ground_effect_height_frac
+		if ge_range > 0.0 and h_agl < ge_range:
+			var t: float = clamp(1.0 - h_agl / ge_range, 0.0, 1.0)
 			ge_bonus = ground_effect_max_bonus * t * t
-	cl *= 1.0 + ge_bonus
 
-	control_eff *= stall_blend
+	# Propwash dynamic pressure added to tail-surface strips. We compute
+	# one number and the caller applies it only to strips in the prop's
+	# slipstream — approximated here as the horizontal and vertical
+	# stabilizers (the ones with names starting "HStab" or "VStab").
+	var propwash_q: float = spec.engine.propwash_q(throttle, speed, takeoff_speed)
 
-	var AR: float = 1.0
-	if wing_area > 0.0:
-		AR = (wing_span * wing_span) / wing_area
-	var induced: float = 0.0
-	if AR > 0.01:
-		induced = (cl * cl) / (PI * AR)
+	var total_force_local: Vector3 = Vector3.ZERO
+	var total_torque_local: Vector3 = Vector3.ZERO
 
-	var q: float = 0.5 * rho * speed * speed
-	var cy: float = -side_force_coefficient * beta * stall_blend
-	if takeoff_speed > 0.0:
-		cy *= clamp(speed / takeoff_speed, 0.0, 1.0)
+	for wing in spec.wings:
+		var is_tail: bool = wing.name.begins_with("HStab") or wing.name.begins_with("VStab")
+		var wing_propwash_q: float = propwash_q if is_tail else 0.0
+		var r: Dictionary = wing.accumulate_forces(
+			v_local,
+			angular_velocity_local,
+			air_density,
+			ge_bonus,
+			wing_propwash_q,
+		)
+		total_force_local += r.force
+		total_torque_local += r.torque
 
-	var cd: float = base_drag_coefficient + induced_drag_factor * cl * cl + induced + flap_drag_bonus * flap_deployed
-	cd *= lerp(1.0, stall_drag_multiplier, 1.0 - stall_blend)
+	# Fuselage parasitic drag — simple square-law along the velocity vector.
+	var fuselage_drag_mag: float = 0.5 * air_density * speed * speed * spec.fuselage_frontal_area * spec.fuselage_drag_coefficient
+	if speed > 1e-3:
+		total_force_local += -(v_local / speed) * fuselage_drag_mag
 
-	var qS: float = q * wing_area
-	var F_local: Vector3 = Vector3(cy * qS, cl * qS, -cd * qS)
-	var F_aero: Vector3 = basis * F_local
-	var F_thrust: Vector3 = fwd * (max_thrust * throttle * thrust_density_scale)
-	var F_grav: Vector3 = Vector3.DOWN * 9.81 * mass
-	velocity += ((F_aero + F_thrust + F_grav) / mass) * delta
-	if speed < 0.1:
-		velocity += fwd * throttle * delta * 2.0
+	# Engine thrust
+	total_force_local += spec.engine.thrust_force(throttle, altitude, air_density_sea_level)
+	total_torque_local += spec.engine.thrust_torque(throttle, aoa)
 
-	# --- Torques ---
-	# Right-vector .y encodes bank without coupling pitch.
-	var roll_level: float = -roll_stability * basis.x.y
+	# Convert force to world frame and add gravity.
+	var force_world: Vector3 = basis * total_force_local
+	force_world += Vector3.DOWN * 9.81 * spec.mass
 
-	# P-factor: at positive AoA with high throttle, descending prop blade
-	# bites more air than ascending blade, producing a yaw moment. Sign
-	# convention: positive AoA + CW prop → left yaw (−y for us).
-	var p_factor_torque: float = -p_factor_gain * throttle * aoa
+	# Linear integration
+	var lin_accel: Vector3 = force_world / spec.mass
+	velocity += lin_accel * delta
 
-	# Torque reaction: the prop spins; the airframe wants to roll the
-	# other way. Rolls around the longitudinal axis.
-	var torque_reaction: float = -torque_reaction_gain * throttle
-
-	# Flaps push the nose down slightly when deployed.
-	var flap_pitch: float = -flap_pitch_down_moment * flap_deployed
-
-	var ang_acc: Vector3 = Vector3(
-		(input_pitch * elevator_authority * control_eff) + flap_pitch + (-pitch_stability * aoa) - angular_velocity.x * angular_damping * control_eff,
-		(input_yaw * rudder_authority * control_eff) + p_factor_torque + (-yaw_stability * beta) - angular_velocity.y * angular_damping * control_eff,
-		(input_roll * aileron_authority * control_eff) + torque_reaction + roll_level - angular_velocity.z * angular_damping * control_eff
+	# Angular integration (plane-local)
+	var ang_accel: Vector3 = Vector3(
+		total_torque_local.x / spec.inertia.x,
+		total_torque_local.y / spec.inertia.y,
+		total_torque_local.z / spec.inertia.z,
 	)
-	angular_velocity += ang_acc * delta
-	if angular_velocity.length() > max_angular_speed:
-		angular_velocity = angular_velocity.normalized() * max_angular_speed
+	angular_velocity_local += ang_accel * delta
 
-	rotate_object_local(Vector3.RIGHT,   angular_velocity.x * delta)
-	rotate_y(                            angular_velocity.y * delta)
-	rotate_object_local(Vector3.FORWARD, angular_velocity.z * delta)
+	# Apply rotation in body frame.
+	rotate_object_local(Vector3.RIGHT,   angular_velocity_local.x * delta)   # pitch
+	rotate_y(                            angular_velocity_local.y * delta)   # yaw
+	rotate_object_local(Vector3.FORWARD, angular_velocity_local.z * delta)   # roll
+
+func _apply_taxi_physics(
+	delta: float,
+	v_local: Vector3,
+	fwd: Vector3,
+	basis: Basis,
+	air_density: float,
+) -> void:
+	# At taxi speeds the blade-element forces are tiny and jittery; use a
+	# simple ground model instead.
+	var v_long: float = velocity.dot(fwd)
+	var right_vec: Vector3 = basis.x
+	var v_side: float = velocity.dot(right_vec)
+
+	var density_scale: float = exp(-max(global_position.y, 0.0) / spec.engine.density_scale_height)
+	var F_engine: Vector3 = fwd * (spec.engine.max_thrust * throttle * density_scale)
+	var brake_limit: float = brake_force * input_brake
+	var F_brake_mag: float = min(abs(v_long) * spec.mass * ground_long_damp, brake_limit)
+	var F_brake: Vector3 = Vector3.ZERO
+	if F_brake_mag > 0.0:
+		F_brake = -sign(v_long) * F_brake_mag * fwd
+	var F_lat: Vector3 = -v_side * spec.mass * ground_lateral_damp * right_vec
+
+	var cap: float = taxi_max_speed + 4.0 * (1.0 - input_brake)
+	if velocity.length() > cap:
+		F_engine = Vector3.ZERO
+
+	var steer_cmd: float = clamp(input_yaw + 0.3 * input_roll, -1.0, 1.0)
+	rotate_y(steer_cmd * taxi_steer_gain * delta)
+
+	var F_total: Vector3 = F_engine + F_brake + F_lat + Vector3.DOWN * 9.81 * spec.mass
+	velocity += (F_total / spec.mass) * delta
+	angular_velocity_local = angular_velocity_local.lerp(Vector3.ZERO, 8.0 * delta)
 
 # =====================================================================
 # IDLE (no pilot)
@@ -314,7 +296,7 @@ func _apply_flight_physics(delta: float) -> void:
 func _apply_idle_physics(delta: float) -> void:
 	throttle = lerp(throttle, 0.0, delta * 1.5)
 	current_speed = lerp(current_speed, 0.0, delta * 1.2)
-	angular_velocity = angular_velocity.lerp(Vector3.ZERO, delta * 2.0)
+	angular_velocity_local = angular_velocity_local.lerp(Vector3.ZERO, delta * 2.0)
 
 	var target := Vector3.ZERO
 	if not is_on_floor():
@@ -323,12 +305,12 @@ func _apply_idle_physics(delta: float) -> void:
 
 	if is_on_floor():
 		var e: Vector3 = rotation_degrees
-		e.x = lerp_angle(e.x, 0.0, delta * ground_alignment_speed)
-		e.z = lerp_angle(e.z, 0.0, delta * ground_alignment_speed)
+		e.x = lerp_angle(e.x, 0.0, delta * 3.0)
+		e.z = lerp_angle(e.z, 0.0, delta * 3.0)
 		rotation_degrees = e
 
 # =====================================================================
-# VISUAL UPDATES (per tick)
+# VISUAL UPDATES
 # =====================================================================
 func _update_propeller(delta: float) -> void:
 	if prop_hub != null:
@@ -357,7 +339,7 @@ func lerp_angle(from_angle: float, to_angle: float, weight: float) -> float:
 	return from_angle + diff * clamp(weight, 0.0, 1.0)
 
 # =====================================================================
-# SEAT / ENTER / EXIT
+# SEAT / ENTER / EXIT (unchanged)
 # =====================================================================
 func _attach_player_to_seat() -> void:
 	if controlling_player == null:
@@ -375,7 +357,7 @@ func enter_plane(player: CharacterBody3D) -> void:
 	input_yaw = 0.0
 	input_roll = 0.0
 	input_brake = 0.0
-	angular_velocity = Vector3.ZERO
+	angular_velocity_local = Vector3.ZERO
 
 	if controlling_player.has_method("set_control_enabled"):
 		controlling_player.set_control_enabled(false)
@@ -441,7 +423,7 @@ func exit_plane() -> void:
 	input_roll = 0.0
 	input_brake = 0.0
 	_flap_target = 0.0
-	angular_velocity = Vector3.ZERO
+	angular_velocity_local = Vector3.ZERO
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _on_entry_body_entered(body: Node) -> void:
@@ -453,7 +435,7 @@ func _on_entry_body_exited(body: Node) -> void:
 		nearby_player = null
 
 # =====================================================================
-# VISUAL CONSTRUCTION
+# VISUAL CONSTRUCTION — unchanged from Phase 8, dimensions pulled from spec
 # =====================================================================
 func _init_materials() -> void:
 	_mat_fuselage = _make_mat(Color(0.92, 0.9, 0.85), 0.45, 0.1)
@@ -494,51 +476,31 @@ static func _cyl(radius_top: float, radius_bot: float, height: float, mat: Stand
 	mi.material_override = mat
 	return mi
 
-static func _sphere(radius: float, mat: StandardMaterial3D) -> MeshInstance3D:
-	var mi := MeshInstance3D.new()
-	var mesh := SphereMesh.new()
-	mesh.radius = radius
-	mesh.height = radius * 2.0
-	mesh.radial_segments = 16
-	mesh.rings = 8
-	mi.mesh = mesh
-	mi.material_override = mat
-	return mi
-
 func _build_visuals() -> void:
 	_build_fuselage()
-	_build_wings()
-	_build_tail()
+	_build_wings_from_spec()
+	_build_tail_from_spec()
 	_build_prop()
 	_build_gear()
 
 func _build_fuselage() -> void:
-	# Main body: two overlapping boxes giving a slight taper (nose wider, tail narrower).
 	var body := _box(Vector3(1.0, 1.0, 4.0), _mat_fuselage)
-	body.name = "FuselageBody"
 	body.position = Vector3(0, 0.1, 0.2)
 	add_child(body)
 
 	var belly := _box(Vector3(0.9, 0.5, 4.2), _mat_fuselage)
-	belly.name = "FuselageBelly"
 	belly.position = Vector3(0, -0.3, 0.2)
 	add_child(belly)
 
-	# Rear fuselage taper
 	var tail_cone := _box(Vector3(0.55, 0.55, 1.6), _mat_fuselage)
-	tail_cone.name = "TailCone"
 	tail_cone.position = Vector3(0, 0.25, 2.1)
 	add_child(tail_cone)
 
-	# Engine cowl (nose) — slightly wider, accent-colored
 	var cowl := _box(Vector3(1.05, 1.0, 1.0), _mat_accent)
-	cowl.name = "EngineCowl"
 	cowl.position = Vector3(0, 0.1, -2.1)
 	add_child(cowl)
 
-	# Canopy (transparent)
 	var canopy := MeshInstance3D.new()
-	canopy.name = "Canopy"
 	var canopy_mesh := BoxMesh.new()
 	canopy_mesh.size = Vector3(0.9, 0.7, 1.8)
 	canopy.mesh = canopy_mesh
@@ -546,95 +508,71 @@ func _build_fuselage() -> void:
 	canopy.position = Vector3(0, 0.9, -0.5)
 	add_child(canopy)
 
-	# Red stripe down the fuselage for character
 	var stripe := _box(Vector3(1.01, 0.12, 3.8), _mat_accent)
-	stripe.name = "FuselageStripe"
 	stripe.position = Vector3(0, 0.1, 0.0)
 	add_child(stripe)
 
-func _build_wings() -> void:
-	# High wing: sits above the fuselage with a slight dihedral.
-	var half_span: float = wing_span * 0.5
-	var chord: float = 1.6
+func _build_wings_from_spec() -> void:
+	var half_span: float = spec.main_wing_half_span
+	var chord: float = spec.main_wing_chord
 	var thickness: float = 0.15
-	var dihedral_deg: float = 4.0
-	var root_y: float = 1.25
-	var wing_offset_z: float = -0.2
+	var dihedral_deg: float = spec.main_wing_dihedral_deg
+	var root_y: float = spec.main_wing_y
+	var wing_offset_z: float = spec.main_wing_z
 
-	# Left wing panel
+	# Main wing panels
 	var left_wing := _box(Vector3(half_span, thickness, chord), _mat_wing)
-	left_wing.name = "LeftWing"
 	left_wing.position = Vector3(-half_span * 0.5, root_y, wing_offset_z)
 	left_wing.rotation_degrees.z = dihedral_deg
 	add_child(left_wing)
 
 	var right_wing := _box(Vector3(half_span, thickness, chord), _mat_wing)
-	right_wing.name = "RightWing"
 	right_wing.position = Vector3(half_span * 0.5, root_y, wing_offset_z)
 	right_wing.rotation_degrees.z = -dihedral_deg
 	add_child(right_wing)
 
-	# Wing-root fairing
 	var fairing := _box(Vector3(1.0, 0.25, chord * 0.8), _mat_fuselage)
-	fairing.name = "WingFairing"
 	fairing.position = Vector3(0, root_y - 0.05, wing_offset_z)
 	add_child(fairing)
 
-	# Lift struts (bush-plane characteristic, thin diagonals)
 	for side in [-1.0, 1.0]:
 		var strut := _cyl(0.04, 0.04, 1.6, _mat_metal, 6)
-		strut.name = "Strut_%s" % ("L" if side < 0.0 else "R")
 		strut.position = Vector3(side * 2.2, root_y * 0.5 + 0.1, wing_offset_z + 0.3)
 		strut.rotation_degrees.z = -side * 30.0
 		add_child(strut)
 
-	# Flaps and ailerons: outer wing portion has ailerons, inner has flaps.
-	# Each is a Node3D at the hinge (trailing edge of main wing), with a
-	# BoxMesh offset back so the Node3D's rotation axis is the hinge line.
+	# Flaps + ailerons (visual only — the sim uses wing strips)
 	var trailing_edge_z: float = wing_offset_z + chord * 0.5
 	var ctrl_chord: float = 0.35
 	var ctrl_thickness: float = thickness * 0.9
-
 	var aileron_span: float = half_span * 0.4
 	var flap_span: float = half_span * 0.4
 
-	# Left aileron (outer)
-	left_aileron = _make_control_surface(
-		"LeftAileron",
+	left_aileron = _make_control_surface("LeftAileron",
 		Vector3(-half_span * 0.75, root_y, trailing_edge_z),
 		Vector3(aileron_span, ctrl_thickness, ctrl_chord),
-		ctrl_chord * 0.5,
-		dihedral_deg)
+		ctrl_chord * 0.5, dihedral_deg)
 	add_child(left_aileron)
 
-	right_aileron = _make_control_surface(
-		"RightAileron",
+	right_aileron = _make_control_surface("RightAileron",
 		Vector3(half_span * 0.75, root_y, trailing_edge_z),
 		Vector3(aileron_span, ctrl_thickness, ctrl_chord),
-		ctrl_chord * 0.5,
-		-dihedral_deg)
+		ctrl_chord * 0.5, -dihedral_deg)
 	add_child(right_aileron)
 
-	# Flaps (inner)
-	left_flap = _make_control_surface(
-		"LeftFlap",
+	left_flap = _make_control_surface("LeftFlap",
 		Vector3(-half_span * 0.25, root_y, trailing_edge_z),
 		Vector3(flap_span, ctrl_thickness, ctrl_chord),
-		ctrl_chord * 0.5,
-		dihedral_deg)
+		ctrl_chord * 0.5, dihedral_deg)
 	add_child(left_flap)
 
-	right_flap = _make_control_surface(
-		"RightFlap",
+	right_flap = _make_control_surface("RightFlap",
 		Vector3(half_span * 0.25, root_y, trailing_edge_z),
 		Vector3(flap_span, ctrl_thickness, ctrl_chord),
-		ctrl_chord * 0.5,
-		-dihedral_deg)
+		ctrl_chord * 0.5, -dihedral_deg)
 	add_child(right_flap)
 
 func _make_control_surface(n: String, hinge_pos: Vector3, mesh_size: Vector3, back_offset: float, roll_deg: float) -> Node3D:
-	# Pivot Node3D sits on the hinge line. The mesh child is offset back
-	# along +z so the pivot rotation axis aligns with the hinge.
 	var pivot := Node3D.new()
 	pivot.name = n
 	pivot.position = hinge_pos
@@ -644,37 +582,29 @@ func _make_control_surface(n: String, hinge_pos: Vector3, mesh_size: Vector3, ba
 	pivot.add_child(mesh)
 	return pivot
 
-func _build_tail() -> void:
-	# Horizontal stabilizer
-	var stab_z: float = 2.4
-	var stab_span: float = 3.0
-	var stab_chord: float = 0.9
+func _build_tail_from_spec() -> void:
+	var stab_span: float = spec.h_stab_half_span * 2.0
+	var stab_chord: float = spec.h_stab_chord
 	var stab_thick: float = 0.12
-	var stab_y: float = 0.65
+	var stab_y: float = spec.h_stab_y
+	var stab_z: float = spec.h_stab_z
 
 	var stab := _box(Vector3(stab_span, stab_thick, stab_chord), _mat_wing)
-	stab.name = "HorizStabilizer"
 	stab.position = Vector3(0, stab_y, stab_z)
 	add_child(stab)
 
-	# Elevator — single piece spanning the stabilizer, hinge at its leading edge.
-	elevator = _make_control_surface(
-		"Elevator",
+	elevator = _make_control_surface("Elevator",
 		Vector3(0, stab_y, stab_z + stab_chord * 0.5),
 		Vector3(stab_span, stab_thick * 0.9, 0.35),
-		0.175,
-		0.0)
+		0.175, 0.0)
 	add_child(elevator)
 
-	# Vertical fin
-	var fin_h: float = 1.2
-	var fin_c: float = 1.0
+	var fin_h: float = spec.v_stab_height
+	var fin_c: float = spec.v_stab_chord
 	var fin := _box(Vector3(0.1, fin_h, fin_c), _mat_fuselage)
-	fin.name = "VerticalFin"
 	fin.position = Vector3(0, stab_y + fin_h * 0.5, stab_z - 0.1)
 	add_child(fin)
 
-	# Rudder — hinges on Y axis at trailing edge of fin.
 	var rudder_pivot := Node3D.new()
 	rudder_pivot.name = "Rudder"
 	rudder_pivot.position = Vector3(0, stab_y + fin_h * 0.5, stab_z - 0.1 + fin_c * 0.5)
@@ -685,30 +615,18 @@ func _build_tail() -> void:
 	rudder = rudder_pivot
 
 func _build_prop() -> void:
-	# Spinner cone
 	var spinner := _cyl(0.0, 0.25, 0.35, _mat_accent, 12)
-	spinner.name = "Spinner"
 	spinner.position = Vector3(0, 0.1, -2.75)
 	spinner.rotation_degrees.x = 90.0
 	add_child(spinner)
 
-	# Prop hub — a Node3D rotated so its own +Z axis points along the
-	# plane's forward axis. Blades are children offset radially; rotating
-	# the hub around its local Z spins all blades together.
 	prop_hub = Node3D.new()
 	prop_hub.name = "PropHub"
 	prop_hub.position = Vector3(0, 0.1, -2.9)
-	# Hub is already aligned with the fuselage Z axis — no additional rotation.
 	add_child(prop_hub)
 
-	# Three blades 120° apart
 	for i in range(3):
-		var blade := _box(Vector3(0.1, 1.1, 0.02), _mat_blade)
-		blade.rotation_degrees.z = float(i) * 120.0
-		# Offset blade center so one end is at hub (0,0,0) — rotate first, then translate
-		# Use a nested Node3D to make geometry clear
 		var blade_pivot := Node3D.new()
-		blade_pivot.name = "Blade%d" % i
 		blade_pivot.rotation_degrees.z = float(i) * 120.0
 		var blade_mesh := _box(Vector3(0.1, 1.1, 0.03), _mat_blade)
 		blade_mesh.position = Vector3(0, 0.6, 0)
@@ -716,32 +634,26 @@ func _build_prop() -> void:
 		prop_hub.add_child(blade_pivot)
 
 func _build_gear() -> void:
-	# Main gear — two struts + tires, tailwheel configuration
 	var main_z: float = -0.6
 	var main_x: float = 1.0
 	var gear_y: float = -0.85
 
 	for side in [-1.0, 1.0]:
 		var strut := _cyl(0.05, 0.05, 1.0, _mat_metal, 6)
-		strut.name = "MainStrut_%s" % ("L" if side < 0.0 else "R")
 		strut.position = Vector3(side * main_x * 0.5, gear_y + 0.5, main_z)
 		strut.rotation_degrees.z = side * 10.0
 		add_child(strut)
 
 		var wheel := _cyl(0.3, 0.3, 0.2, _mat_rubber, 16)
-		wheel.name = "MainWheel_%s" % ("L" if side < 0.0 else "R")
 		wheel.position = Vector3(side * main_x, gear_y, main_z)
 		wheel.rotation_degrees.z = 90.0
 		add_child(wheel)
 
-	# Tailwheel assembly
 	var tail_strut := _cyl(0.03, 0.03, 0.4, _mat_metal, 6)
-	tail_strut.name = "TailStrut"
 	tail_strut.position = Vector3(0, -0.2, 2.6)
 	add_child(tail_strut)
 
 	var tail_wheel := _cyl(0.12, 0.12, 0.08, _mat_rubber, 12)
-	tail_wheel.name = "TailWheel"
 	tail_wheel.position = Vector3(0, -0.45, 2.7)
 	tail_wheel.rotation_degrees.z = 90.0
 	add_child(tail_wheel)
