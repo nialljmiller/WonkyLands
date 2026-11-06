@@ -611,93 +611,6 @@ func apply_biome_texturing(mesh_instance: MeshInstance3D, biome_type: int):
 	# Apply material to terrain mesh
 	mesh_instance.material_override = terrain_material
 
-# Add sky environment
-func add_sky_environment():
-	# Create world environment node
-	var world_environment = WorldEnvironment.new()
-	world_environment.name = "WorldEnvironment"
-
-	# Create environment resource
-	var environment = Environment.new()
-
-	# Configure sky
-	environment.background_mode = Environment.BG_SKY
-
-	# Create procedural sky
-	var sky = Sky.new()
-	var sky_material = ProceduralSkyMaterial.new()
-
-	# Configure sky parameters
-	sky_material.sky_top_color = Color(0.2, 0.4, 0.8)
-	sky_material.sky_horizon_color = Color(0.6, 0.7, 0.9)
-	sky_material.sky_curve = 0.15
-
-	sky_material.ground_bottom_color = Color(0.1, 0.1, 0.1)
-	sky_material.ground_horizon_color = Color(0.6, 0.7, 0.9)
-	sky_material.ground_curve = 0.15
-
-	sky_material.sun_angle_max = 30.0
-	sky_material.sun_curve = 0.15
-
-	# Assign material to sky
-	sky.sky_material = sky_material
-	environment.sky = sky
-
-	# Configure ambient light
-	environment.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	environment.ambient_light_color = Color(0.5, 0.5, 0.5)
-	environment.ambient_light_energy = 1.0
-
-	# Configure tone mapping
-	environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	environment.tonemap_exposure = 1.0
-	environment.tonemap_white = 1.0
-
-	# Assign environment to world environment
-	world_environment.environment = environment
-
-	# Add to scene hierarchy
-	add_child(world_environment)
-		
-func add_celestial_elements():
-	# Create directional light for sun
-	var sun_light = DirectionalLight3D.new()
-	sun_light.name = "SunLight"
-	sun_light.light_color = Color(1.0, 0.98, 0.88)  # Slightly warm sunlight
-	sun_light.light_energy = 1.2
-	sun_light.shadow_enabled = true
-
-	# Configure shadow parameters for optimal terrain visualization
-	sun_light.shadow_bias = 0.05
-	sun_light.directional_shadow_max_distance = 500.0
-	sun_light.directional_shadow_split_1 = 0.1
-	sun_light.directional_shadow_split_2 = 0.2
-	sun_light.directional_shadow_split_3 = 0.5
-
-	# Position light to suggest mid-morning/afternoon illumination
-	sun_light.rotation_degrees = Vector3(-45, -30, 0)
-
-	# Add visual representation of sun (optional)
-	var sun_mesh = SphereMesh.new()
-	var sun_instance = MeshInstance3D.new()
-	sun_instance.name = "SunMesh"
-	sun_instance.mesh = sun_mesh
-
-	# Create emissive material for sun visualization
-	var sun_material = StandardMaterial3D.new()
-	sun_material.emission_enabled = true
-	sun_material.emission = Color(1.0, 0.9, 0.5)
-	sun_material.emission_energy = 5.0
-	sun_instance.material_override = sun_material
-
-	# Position sun visual representation
-	sun_instance.position = Vector3(-1000, 800, -1000)
-	sun_instance.scale = Vector3(50, 50, 50)
-
-	# Add to scene hierarchy
-	add_child(sun_light)
-	add_child(sun_instance)
-
 func add_player_to_scene():
 	# Instance the declarative Player.tscn so controller, collision, mesh
 	# and camera all come from one place instead of being assembled here.
@@ -707,12 +620,13 @@ func add_player_to_scene():
 		return
 	var player := player_packed.instantiate()
 	player.name = "Player"
-	# Spawn above the origin chunk so the player falls onto terrain.
-	player.position = Vector3(0, 50, 0)
+	# Probe the analytical terrain height so we spawn ON the ground, not
+	# at a hardcoded 50 m that may be above or below actual terrain.
+	var ground_h: float = get_terrain_height(0.0, 0.0)
+	var spawn_y: float = max(ground_h, water_level) + 2.0
+	player.position = Vector3(0.0, spawn_y, 0.0)
 	add_child(player)
 
-	# If the scene file had a leftover Camera3D at the TerrainGenerator
-	# level (legacy), get rid of it — Player.tscn already has its own.
 	var stray_cam := get_node_or_null("Camera3D")
 	if stray_cam:
 		stray_cam.queue_free()

@@ -64,8 +64,8 @@ var secondary_moon_light: DirectionalLight3D
 var secondary_moon_mesh: MeshInstance3D
 var secondary_moon_material: ShaderMaterial
 var sky_environment: WorldEnvironment
-var star_parent: Node3D
-var stars: Array = []
+var star_multimesh_node: MultiMeshInstance3D = null
+var star_material: ShaderMaterial = null
 
 # Orbit calculation variables
 var sun_orbit_radius: float = 100000.0  # Arbitrary large value for skybox positioning
@@ -304,80 +304,87 @@ void fragment() {
 	return material
 
 func create_stars():
-	# Create parent node for all stars
-	star_parent = Node3D.new()
-	star_parent.name = "Stars"
-	add_child(star_parent)
-	
-	# Create skybox for stars
-	var skybox_radius = 12000.0  # Slightly larger than sun/moon orbits
-	
-	# Create star meshes
+	# Single MultiMeshInstance3D for all stars — one draw call instead of
+	# star_count, one per-frame uniform update for visibility instead of
+	# iterating per star. Per-star color + baked brightness encoded in
+	# INSTANCE_COLOR; the shader reads it.
+	var skybox_radius: float = 12000.0
+
+	var star_mesh := SphereMesh.new()
+	star_mesh.radius = 1.0         # unit-radius; per-instance transform sets actual size
+	star_mesh.height = 2.0
+	star_mesh.radial_segments = 6  # cheap — stars are dots at this distance
+	star_mesh.rings = 3
+
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = star_mesh
+	mm.instance_count = star_count
+
 	for i in range(star_count):
-		# Determine if this star is part of the galactic plane distribution
-		var in_galactic_plane = randf() < milky_way_concentration
-		
-		# Calculate position on unit sphere
-		var pos = random_point_on_sphere(in_galactic_plane)
-		
-		# Create star instance
-		var star = create_star_instance(pos * skybox_radius, in_galactic_plane)
-		star_parent.add_child(star)
-		stars.append(star)
+		var in_galactic_plane: bool = randf() < milky_way_concentration
+		var pos: Vector3 = random_point_on_sphere(in_galactic_plane) * skybox_radius
+		var size_lo: float = 5.0 if in_galactic_plane else 3.0
+		var size_hi: float = 20.0 if in_galactic_plane else 15.0
+		var star_size: float = randf_range(size_lo, size_hi)
 
+		var xf := Transform3D(Basis().scaled(Vector3.ONE * star_size), pos)
+		mm.set_instance_transform(i, xf)
 
-# In AstronomicalSystem.gd
-func create_star_instance(position: Vector3, in_galactic_plane: bool) -> MeshInstance3D:
-	# Create star mesh
-	var star_mesh = SphereMesh.new()
+		var color_type: float = randf()
+		var star_color: Color
+		if color_type < 0.1:
+			star_color = Color(0.7, 0.8, 1.0)       # Blue O/B
+		elif color_type < 0.3:
+			star_color = Color(1.0, 1.0, 1.0)       # White A
+		elif color_type < 0.6:
+			star_color = Color(1.0, 0.96, 0.84)     # Yellow F/G
+		elif color_type < 0.85:
+			star_color = Color(1.0, 0.8, 0.6)       # Orange K
+		else:
+			star_color = Color(1.0, 0.6, 0.5)       # Red M
 
-	# Increase star size significantly
-	var size_range = [5.0, 20.0] if in_galactic_plane else [3.0, 15.0]
-	var star_size = randf_range(size_range[0], size_range[1])
+		var brightness: float = randf_range(0.5, 1.5)
+		if in_galactic_plane:
+			brightness *= 1.3
+		# Encode brightness in alpha channel; shader multiplies RGB by it.
+		mm.set_instance_color(i, Color(star_color.r, star_color.g, star_color.b, brightness))
 
-	star_mesh.radius = star_size
-	star_mesh.height = star_size * 2.0
-	# Create star instance
-	var star_instance = MeshInstance3D.new()
-	star_instance.mesh = star_mesh
-	
-	# Set position
-	star_instance.position = position
-	
-	# Create emissive material for star
-	var star_material = StandardMaterial3D.new()
-	star_material.emission_enabled = true
-	
-	# Determine star color (blue, white, yellow, orange, red in approximate proportions)
-	var color_type = randf()
-	var star_color
-	
-	if color_type < 0.1:
-		# Blue O/B stars (rare)
-		star_color = Color(0.7, 0.8, 1.0)
-	elif color_type < 0.3:
-		# White A stars
-		star_color = Color(1.0, 1.0, 1.0)
-	elif color_type < 0.6:
-		# Yellow F/G stars like our Sun
-		star_color = Color(1.0, 0.96, 0.84)
-	elif color_type < 0.85:
-		# Orange K stars
-		star_color = Color(1.0, 0.8, 0.6)
-	else:
-		# Red M stars
-		star_color = Color(1.0, 0.6, 0.5)
-	
-	# Make galactic plane stars slightly brighter on average
-	var brightness = randf_range(0.5, 1.5)
-	if in_galactic_plane:
-		brightness *= 1.3
-	
-	star_material.emission = star_color
-	star_material.emission_energy = brightness * 5.0
-	
-	star_instance.material_override = star_material
-	return star_instance
+	star_material = _make_star_material()
+
+	star_multimesh_node = MultiMeshInstance3D.new()
+	star_multimesh_node.name = "Stars"
+	star_multimesh_node.multimesh = mm
+	star_multimesh_node.material_override = star_material
+	star_multimesh_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(star_multimesh_node)
+
+func _make_star_material() -> ShaderMaterial:
+	var shader := Shader.new()
+	shader.code = """
+shader_type spatial;
+render_mode unshaded, cull_disabled, depth_draw_always;
+
+uniform float visibility : hint_range(0.0, 1.0) = 1.0;
+uniform float base_energy = 5.0;
+
+void vertex() {
+	COLOR = INSTANCE_CUSTOM;
+}
+
+void fragment() {
+	// Per-instance color is set via MultiMesh.set_instance_color;
+	// COLOR here comes through the standard instancing path.
+	ALBEDO = vec3(0.0);
+	float brightness = COLOR.a;
+	EMISSION = COLOR.rgb * brightness * base_energy * visibility;
+	ALPHA = 1.0;
+}
+"""
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	return mat
 
 func random_point_on_sphere(in_galactic_plane: bool) -> Vector3:
 	if in_galactic_plane:
@@ -639,23 +646,9 @@ func update_sky_colors():
 	sun_mesh.visible = sun_altitude > -0.05
 
 func update_star_visibility(night_factor: float):
-	# Update star visibility based on time of day
-	for star in stars:
-		var material = star.material_override
-		
-		# Get original emission energy
-		#var base_energy = material.emission_energy
-		var base_energy = material.emission_energy_multiplier
-		# Calculate visibility factor based on celestial position
-		var position_factor = 1.0
-		
-		# Stars should only be visible in their hemisphere
-		var altitude = calculate_altitude(star.position)
-		if altitude < 0:
-			position_factor = 0.0
-		
-		# Calculate final visibility
-		material.emission_energy = base_energy * night_factor * position_factor
+	# One uniform update covers every star — no per-star iteration.
+	if star_material:
+		star_material.set_shader_parameter("visibility", clamp(night_factor, 0.0, 1.0))
 
 func update_celestial_lighting():
 	# Update shadow cascade distances based on sun altitude

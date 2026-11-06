@@ -72,6 +72,7 @@ func _physics_process(delta: float) -> void:
 		velocity = Vector3.ZERO
 		move_and_slide()
 		return
+	_sync_water_state()
 	_update_state()
 	match _state:
 		State.SWIMMING: _process_swimming(delta)
@@ -98,6 +99,22 @@ func exit_water() -> void:
 
 func is_in_water() -> bool:
 	return _in_water
+
+# Authoritative per-tick check against the water plane. WaterSystem's
+# Area3D still fires enter/exit for splash FX, but this is what drives
+# swim-state transitions — no missed events when the player crosses the
+# surface faster than one physics tick worth of collision overlap.
+func _sync_water_state() -> void:
+	if typeof(World) == TYPE_NIL:
+		return
+	var water_level: float = World.get_water_level()
+	if water_level <= -1e8:
+		return
+	var submerged: bool = global_position.y < water_level
+	if submerged and not _in_water:
+		enter_water()
+	elif not submerged and _in_water:
+		exit_water()
 
 func set_control_enabled(value: bool) -> void:
 	_controls_enabled = value
