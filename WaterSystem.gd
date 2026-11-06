@@ -62,14 +62,13 @@ var ripple_system: RippleSystem
 var debug_enabled: bool = false
 
 func _ready():
-		print("Realistic water system initializing...")
+	# Register with the World singleton so other subsystems can find us
+	# without walking the scene tree or duck-typing has_method() probes.
+	if typeof(World) != TYPE_NIL:
+		World.register_water_system(self)
 
-		# Initialize subsystems
-		initialize_subsystems()
-
-		ensure_water_shader()
-
-		print("Water system initialized!")
+	initialize_subsystems()
+	ensure_water_shader()
 
 func _process(delta):
 		# Update water waves using time and shader parameters
@@ -443,103 +442,39 @@ func update_water_chunks(player_pos: Vector3, view_distance: int, chunk_size: in
 	for chunk_pos in chunks_to_remove:
 		remove_water_chunk(chunk_pos)
 
-# Signal handling for objects entering water
+# Signal handling for objects entering water. We notify the body via its
+# public enter_water() API (if it has one) instead of mutating its properties
+# or setting meta flags — each body governs its own swim behavior.
 func _on_body_entered_water(body):
-	if body.name == "Player":
-		apply_water_physics(body, true)
-		
-		# Create splash effect
-		var splash_position = body.global_position
-		splash_position.y = water_level
-		
-		# Calculate splash intensity based on velocity
-		var velocity = Vector3.ZERO
-		if body is CharacterBody3D:
-			velocity = body.velocity
-		
-		var impact_velocity = abs(velocity.y)  # Use absolute value of vertical velocity
-		var splash_intensity = clamp(impact_velocity / 10.0, 0.3, 2.0)
-		
-		# Create splash
-		create_splash_effect(splash_position, splash_intensity)
-		
-		# Add ripple via ripple system
-		if ripple_system:
-			ripple_system.add_splash_ripple(splash_position, splash_intensity)
-		
-		# Trigger player's water entry method if it exists
-		if body.has_method("_on_enter_water"):
-			body._on_enter_water()
+	var splash_pos: Vector3 = body.global_position
+	splash_pos.y = water_level
 
-# Signal handling for objects exiting water
+	var impact_v: float = 0.0
+	if body is CharacterBody3D:
+		impact_v = abs(body.velocity.y)
+	var intensity: float = clamp(impact_v / 10.0, 0.3, 2.0)
+	create_splash_effect(splash_pos, intensity)
+	if ripple_system:
+		ripple_system.add_splash_ripple(splash_pos, intensity)
+
+	if body.has_method("enter_water"):
+		body.enter_water()
+
 func _on_body_exited_water(body):
-	if body.name == "Player":
-		apply_water_physics(body, false)
-		
-		# Create small splash when exiting water
-		var splash_position = body.global_position
-		splash_position.y = water_level
-		
-		# Calculate splash intensity based on velocity
-		var velocity = Vector3.ZERO
-		if body is CharacterBody3D:
-			velocity = body.velocity
-		
-		var impact_velocity = velocity.y  # Positive Y is upward when exiting
-		if impact_velocity > 3.0:  # Only splash if moving upward significantly
-			var splash_intensity = clamp(impact_velocity / 10.0, 0.1, 1.0)
-			create_splash_effect(splash_position, splash_intensity)
-			
-			# Add ripple
-			if ripple_system:
-				ripple_system.add_splash_ripple(splash_position, splash_intensity * 0.7)
+	var splash_pos: Vector3 = body.global_position
+	splash_pos.y = water_level
 
-# Apply water physics to objects
-func apply_water_physics(body, in_water: bool):
-	# Set swimming state
-	body.set_meta("is_swimming", in_water)
-	
-	if in_water:
-		# Apply buoyancy and water resistance for RigidBody
-		if body is RigidBody3D:
-			body.gravity_scale = 0.1  # Reduced gravity in water
-			body.linear_damp = water_drag
-			body.angular_damp = water_angular_drag
-		
-		# Apply different movement mechanics for CharacterBody3D
-		if body is CharacterBody3D:
-			# Store original move speed if not already stored
-			if not body.has_meta("original_move_speed") and body.get("move_speed") != null:
-				body.set_meta("original_move_speed", body.move_speed)
-			
-			if not body.has_meta("original_jump_strength") and body.get("jump_strength") != null:
-				body.set_meta("original_jump_strength", body.jump_strength)
-			
-			# Apply swimming speed
-			if body.get("swim_speed") != null:
-				body.move_speed = body.swim_speed
-			else:
-				# If no swim_speed defined, use 60% of normal speed
-				if body.has_meta("original_move_speed"):
-					body.move_speed = body.get_meta("original_move_speed") * 0.6
-			
-			# Disable normal jumping in water
-			if body.get("jump_strength") != null:
-				body.jump_strength = 0
-	else:
-		# Restore normal physics
-		if body is RigidBody3D:
-			body.gravity_scale = 1.0
-			body.linear_damp = 0.0
-			body.angular_damp = 0.05
-		
-		# Restore original movement values
-		if body is CharacterBody3D:
-			if body.has_meta("original_move_speed"):
-				body.move_speed = body.get_meta("original_move_speed")
-			
-			if body.has_meta("original_jump_strength"):
-				body.jump_strength = body.get_meta("original_jump_strength")
+	var upward_v: float = 0.0
+	if body is CharacterBody3D:
+		upward_v = body.velocity.y
+	if upward_v > 3.0:
+		var intensity: float = clamp(upward_v / 10.0, 0.1, 1.0)
+		create_splash_effect(splash_pos, intensity)
+		if ripple_system:
+			ripple_system.add_splash_ripple(splash_pos, intensity * 0.7)
+
+	if body.has_method("exit_water"):
+		body.exit_water()
 
 # Create a splash effect at the specified position
 func create_splash_effect(position: Vector3, intensity: float = 1.0):

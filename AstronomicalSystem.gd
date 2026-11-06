@@ -73,49 +73,62 @@ var primary_moon_orbit_radius: float = 80000.0
 var secondary_moon_orbit_radius: float = 90000.0
 
 func _ready():
+	if typeof(World) != TYPE_NIL:
+		World.register_astronomical_system(self)
+
 	# Initialize time based on starting hour
 	current_time = start_time
 	year_phase = float(current_day_of_year) / planet_orbital_period
-	
+
 	# Create celestial objects
 	initialize_sky_environment()
 	create_sun()
 	create_primary_moon()
 	create_secondary_moon()
 	create_stars()
-	
+
 	# Initial positioning
 	update_celestial_positions(0)
 
 func _process(delta):
 	# Update time with time scale
 	current_time += delta * time_scale / day_length * 24.0
-	
+
 	# Keep time within 24-hour range
 	while current_time >= 24.0:
 		current_time -= 24.0
 		current_day_of_year = (current_day_of_year + 1) % int(planet_orbital_period)
-	
+
 	# Update day and year phases
 	day_phase = current_time / 24.0
 	year_phase = float(current_day_of_year) / planet_orbital_period
-	
+
 	# Update positions based on new time
 	update_celestial_positions(delta)
-	
+
 	# Update lighting based on celestial positions
 	update_celestial_lighting()
 
+	# Broadcast state to anyone listening via World
+	if typeof(World) != TYPE_NIL:
+		World.notify_time_changed(current_time, current_day_of_year)
+		World.notify_sun_direction(get_sun_direction())
+
+func get_sun_direction() -> Vector3:
+	if sun_mesh == null:
+		return Vector3.DOWN
+	# Direction from sun toward world origin is "where sun is shining from"
+	var d: Vector3 = -sun_mesh.position
+	if d.length_squared() < 1e-6:
+		return Vector3.DOWN
+	return d.normalized()
+
 func initialize_sky_environment():
-	# Create world environment node if it doesn't exist in the scene
-	var existing_env = get_node_or_null("/root/TerrainGenerator/WorldEnvironment")
-	
-	if existing_env:
-		sky_environment = existing_env
-	else:
-		sky_environment = WorldEnvironment.new()
-		sky_environment.name = "WorldEnvironment"
-		add_child(sky_environment)
+	# Own our WorldEnvironment as a child — no more hardcoded scene-tree
+	# lookups across subsystems.
+	sky_environment = WorldEnvironment.new()
+	sky_environment.name = "WorldEnvironment"
+	add_child(sky_environment)
 	
 	# Create or update environment resource
 	var environment = sky_environment.environment

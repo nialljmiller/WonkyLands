@@ -39,14 +39,9 @@ func _ready():
 		set_physics_process(false)
 		return
 	
-	# Find water system
-	water_system = get_node_or_null("/root/TerrainGenerator/WaterSystem")
-	if not water_system:
-		# Try to find water system in parent nodes
-		var current = get_parent()
-		while current and not water_system:
-			water_system = current.get_node_or_null("WaterSystem")
-			current = current.get_parent()
+	# Resolve water system via World — no tree walking, no hardcoded paths.
+	if typeof(World) != TYPE_NIL:
+		water_system = World.get_water_system()
 	
 	if not water_system:
 		push_warning("BuoyancyComponent could not find WaterSystem, will use default water level")
@@ -142,7 +137,7 @@ func calculate_underwater_volume() -> float:
 		
 		# Get wave-adjusted water height at this position
 		var water_height = water_level
-		if water_system and water_system.has_method("get_wave_height_at_position"):
+		if water_system != null:
 			water_height = water_system.get_wave_height_at_position(global_point)
 		
 		# Check if point is underwater
@@ -204,7 +199,7 @@ func apply_water_resistance(delta: float, submerged_fraction: float):
 		parent_body.velocity += drag_force * delta
 
 func apply_wave_forces(delta: float, submerged_fraction: float):
-	if not water_system or not water_system.has_method("get_wave_height_at_position"):
+	if water_system == null:
 		return
 	
 	# Get object position
@@ -283,7 +278,7 @@ func update_debug_visuals():
 		
 		# Get water height at this point
 		var water_height = water_level
-		if water_system and water_system.has_method("get_wave_height_at_position"):
+		if water_system != null:
 			water_height = water_system.get_wave_height_at_position(global_point)
 		
 		# Set color based on whether point is underwater

@@ -45,54 +45,51 @@ enum BiomeType {
 }
 
 func _ready():
-	# Setup noise generator
+	if typeof(World) != TYPE_NIL:
+		World.register_terrain(self)
+
+	# Setup noise generators (deterministic per run via random seed)
 	noise.seed = randi()
 	noise.fractal_octaves = 4
 	noise.frequency = 0.05
 
-	# Setup biome noise generator
-	biome_noise.seed = randi() + 100  # Different seed
+	biome_noise.seed = randi() + 100
 	biome_noise.fractal_octaves = 3
 	biome_noise.frequency = 0.01
 
-	# Initialize astronomical system first
+	# Astro owns the WorldEnvironment now (no fallback add_sky_environment).
 	if enable_astronomical_system:
 		initialize_astronomical_system()
-	else:
-		# Fallback to simple sky if astronomical system is disabled
-		add_sky_environment()
-		add_celestial_elements()
-	
-	# Initialize water system (before terrain)
+
 	if enable_water:
 		initialize_water_system()
-	
-	# Add player to scene
+
 	add_player_to_scene()
-	
-	# Generate initial terrain chunks BEFORE tree system
-	var initial_position = Vector3.ZERO
+
+	# Generate initial terrain around the player before anything downstream
+	# tries to spawn on it (trees, plane).
+	var initial_position: Vector3 = Vector3.ZERO
 	if has_node("Player"):
 		initial_position = $Player.global_position
 	update_terrain_chunks(initial_position)
 
 	if enable_plane:
-		var plane_timer = Timer.new()
+		# Defer so the terrain collision exists when the plane raycasts for
+		# its spawn height.
+		var plane_timer := Timer.new()
 		plane_timer.one_shot = true
 		plane_timer.wait_time = 0.2
 		plane_timer.autostart = true
 		add_child(plane_timer)
 		plane_timer.timeout.connect(func(): add_plane_to_scene())
 
-	# Initialize tree system AFTER terrain is generated
 	if enable_trees:
-		# Create a timer to delay tree system initialization
-		var timer = Timer.new()
-		timer.one_shot = true
-		timer.wait_time = 0.5  # Short delay to ensure terrain loads first
-		timer.autostart = true
-		add_child(timer)
-		timer.timeout.connect(func(): initialize_tree_system())
+		var tree_timer := Timer.new()
+		tree_timer.one_shot = true
+		tree_timer.wait_time = 0.5
+		tree_timer.autostart = true
+		add_child(tree_timer)
+		tree_timer.timeout.connect(func(): initialize_tree_system())
 
 func _process(delta):
 	# Check if player exists
@@ -369,14 +366,26 @@ func generate_terrain_chunk(chunk_pos: Vector2):
 	
 	# Store chunk in dictionary
 	loaded_chunks[chunk_pos] = chunk_node
-	
-	# DO NOT place trees here anymore - we'll do that after all terrain chunks are loaded
+
+	# Broadcast chunk-load so subsystems (trees, fish, future stuff) can
+	# hook in without TerrainGenerator needing to know about them.
+	if typeof(World) != TYPE_NIL:
+		World.notify_chunk_loaded(chunk_pos, chunk_node)
 
 # Removes a chunk that's outside the view distance
 func remove_terrain_chunk(chunk_pos: Vector2):
 	var chunk = loaded_chunks[chunk_pos]
 	chunk.queue_free()
 	loaded_chunks.erase(chunk_pos)
+	if typeof(World) != TYPE_NIL:
+		World.notify_chunk_unloaded(chunk_pos)
+
+# Analytical terrain height at a world XZ point. Matches the noise logic
+# used during chunk generation so subsystems can query without raycasting.
+func get_terrain_height(x: float, z: float) -> float:
+	var base := noise.get_noise_2d(x * noise_scale, z * noise_scale) * amplitude
+	var biome := determine_biome(Vector2(x, z))
+	return apply_biome_height_adjustments(base, biome, Vector2(x, z))
 
 # Adds collision to a chunk
 func add_chunk_collision(chunk_node: Node3D, mesh: ArrayMesh):
@@ -690,44 +699,20 @@ func add_celestial_elements():
 	add_child(sun_instance)
 
 func add_player_to_scene():
-	# Create player character
-	var player = CharacterBody3D.new()
+	# Instance the declarative Player.tscn so controller, collision, mesh
+	# and camera all come from one place instead of being assembled here.
+	var player_packed := load("res://Player.tscn") as PackedScene
+	if player_packed == null:
+		push_error("TerrainGenerator: Player.tscn failed to load")
+		return
+	var player := player_packed.instantiate()
 	player.name = "Player"
-
-	# Add collision shape
-	var collision = CollisionShape3D.new()
-	var capsule = CapsuleShape3D.new()
-	capsule.radius = 0.5
-	capsule.height = 1.5
-	collision.shape = capsule
-	player.add_child(collision)
-
-	# Add visual mesh
-	var mesh = MeshInstance3D.new()
-	var capsule_mesh = CapsuleMesh.new()
-	capsule_mesh.radius = 0.5
-	capsule_mesh.height = 1.5
-	mesh.mesh = capsule_mesh
-	player.add_child(mesh)
-
-	# Set starting position (high above terrain)
+	# Spawn above the origin chunk so the player falls onto terrain.
 	player.position = Vector3(0, 50, 0)
-
-	# Attach controller script
-	player.set_script(load("res://PlayerController.gd"))
-
-	# Add to scene
 	add_child(player)
 
-	# Move the existing camera to be a child of the player
-	var camera = get_node_or_null("Camera3D")
-	if camera:
-		remove_child(camera)
-		player.add_child(camera)
-		camera.position = Vector3(0, 0.7, 0)  # Position it at the player's head level
-		camera.set_script(null)
-	else:
-		# Create a new camera if none exists
-		camera = Camera3D.new()
-		camera.position = Vector3(0, 0.7, 0)
-		player.add_child(camera)
+	# If the scene file had a leftover Camera3D at the TerrainGenerator
+	# level (legacy), get rid of it — Player.tscn already has its own.
+	var stray_cam := get_node_or_null("Camera3D")
+	if stray_cam:
+		stray_cam.queue_free()

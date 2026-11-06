@@ -180,19 +180,8 @@ func damage_tree(amount: float) -> bool:
 	
 	return false
 	
-# Take damage from player tools
+# Take damage from player interaction. Tool/axe gating is left for when a
+# proper inventory system exists; for now any interact cuts the tree.
 func _on_interaction_input():
-	if player_in_range and Input.is_action_just_pressed("interact"):  # Define this action in your input map
-		# If player has axe equipped, damage tree
-		var player = get_node("/root/TerrainGenerator/Player")
-		if player and player.has_method("get_equipped_tool"):
-			var tool_type = player.get_equipped_tool()
-			
-			if tool_type == "axe":
-				var damage = 20.0  # Base damage value
-				damage_tree(damage)
-			else:
-				print("Need an axe to cut down trees!")
-		else:
-			# Simple version, just cut the tree
-			cut_tree()
+	if player_in_range and Input.is_action_just_pressed("interact"):
+		cut_tree()

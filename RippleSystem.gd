@@ -33,18 +33,17 @@ var update_timer = 0.0  # Timer for updates
 var debug_view = null  # Debug visualization
 
 func _ready():
-	# Find water system (parent)
-	water_system = get_parent()
-	if not water_system or not water_system.has_method("get_water_level"):
-		push_error("RippleSystem requires a parent water system with get_water_level method")
-	
-	# Initialize ripple buffer and texture
+	# Resolve water system via World — no parent-walking, no has_method probes.
+	if typeof(World) != TYPE_NIL:
+		water_system = World.get_water_system()
+	if water_system == null:
+		water_system = get_parent()  # legacy fallback
+
 	initialize_ripple_texture()
-	
-	# Create debug view if needed
+
 	if OS.is_debug_build():
 		create_debug_view()
-	
+
 	print("RippleSystem initialized with " + str(ripple_resolution) + "x" + str(ripple_resolution) + " resolution")
 
 func _process(delta):
@@ -217,13 +216,13 @@ func process_player_ripples(delta):
 	if player_ripple_timer > 0:
 		return
 	
-	# Get player
-	var player = get_node_or_null("/root/TerrainGenerator/Player")
-	if not player:
+	# Get player via World and ask it directly if it's in water.
+	var player: Node = null
+	if typeof(World) != TYPE_NIL:
+		player = World.get_player()
+	if player == null:
 		return
-	
-	# Only create ripples if player is in water
-	if not player.has_meta("is_swimming") or not player.get_meta("is_swimming"):
+	if not (player.has_method("is_in_water") and player.is_in_water()):
 		return
 	
 	# Check player speed
@@ -248,57 +247,17 @@ func process_player_ripples(delta):
 	# Reset timer
 	player_ripple_timer = player_ripple_interval
 
-# Process environmental ripples (rain, wind, etc.)
+# Process environmental ripples. Reserved for future weather integration —
+# will listen to a WeatherSystem on World when one exists. No-op for now.
 func process_environmental_ripples():
-	# Check for rain ripples
-	var is_raining = false
-	var rain_intensity = 0.0
-	
-	# Check for weather system
-	var weather_system = get_node_or_null("/root/TerrainGenerator/WeatherSystem")
-	if weather_system:
-		if weather_system.has_method("is_raining") or weather_system.has("is_raining"):
-			is_raining = weather_system.is_raining
-		
-		if weather_system.has_method("get_rain_intensity") or weather_system.has("rain_intensity"):
-			rain_intensity = weather_system.rain_intensity
-			if rain_intensity == null:
-				rain_intensity = 0.5
-	
-	# Create random rain ripples
-	if is_raining and randf() < rain_ripple_chance * rain_intensity:
-		# Get a random position near the player
-		var player = get_node_or_null("/root/TerrainGenerator/Player")
-		if not player:
-			return
-		
-		var random_offset = Vector3(
-			randf_range(-10, 10),
-			0,
-			randf_range(-10, 10)
-		)
-		
-		var ripple_pos = player.global_position + random_offset
-		ripple_pos.y = water_system.get_water_level()
-		
-		# Add rain ripple
-		add_ripple(ripple_pos, rain_ripple_strength * rain_intensity, 0.1, 1.0)
+	pass
 
-# Update water shaders with ripple texture
+# Update water shaders with ripple texture — WaterSystem's contract guarantees
+# apply_ripple_texture, so no probing needed.
 func update_water_shaders():
-	# Check water system
-	if not water_system or not water_system.has_method("apply_ripple_texture"):
-		# Apply ripples to all water chunks
-		var chunks = water_system.get("water_chunks", {})
-		for chunk_pos in chunks:
-			var water_mesh = chunks[chunk_pos]
-			if water_mesh and is_instance_valid(water_mesh):
-				var material = water_mesh.material_override
-				if material and material is ShaderMaterial:
-					material.set_shader_parameter(ripple_shader_param_name, ripple_texture)
-	else:
-		# Use water system's dedicated method
-		water_system.apply_ripple_texture(ripple_texture)
+	if water_system == null:
+		return
+	water_system.apply_ripple_texture(ripple_texture)
 
 # Add interaction ripple at position (for other objects)
 func add_interaction_ripple(position: Vector3, strength: float = 1.0):

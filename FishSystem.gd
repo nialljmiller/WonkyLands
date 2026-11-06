@@ -31,17 +31,16 @@ var debug_fish_count_timer: float = 0.0
 var total_fish_created: int = 0
 
 func _ready() -> void:
-	# Find water system (parent)
-	water_system = get_parent()
-	if not water_system or not water_system.has_method("get_water_level"):
-		push_error("FishSystem requires a parent water system with get_water_level()")
-	
-	# Create container
+	# Resolve the water system through the World singleton so we don't
+	# depend on being parented to it or probe methods with has_method().
+	if typeof(World) != TYPE_NIL:
+		water_system = World.get_water_system()
+	if water_system == null:
+		water_system = get_parent()  # legacy fallback
+
 	fish_parent = Node3D.new()
 	fish_parent.name = "FishParent"
 	add_child(fish_parent)
-	
-	print("ImprovedFishSystem initialized")
 
 func _process(delta: float) -> void:
 	# Spawn queue
@@ -192,7 +191,9 @@ func create_simple_fish_mesh() -> MeshInstance3D:
 
 # Behavior update
 func update_fish_behaviors() -> void:
-	var player: Node3D = get_node_or_null("/root/TerrainGenerator/Player")
+	var player: Node3D = null
+	if typeof(World) != TYPE_NIL:
+		player = World.get_player()
 	var water_level: float = water_system.get_water_level()
 	var ticks: int = Time.get_ticks_msec()
 	var fish_to_remove: Array[CharacterBody3D] = []
@@ -248,11 +249,9 @@ func update_fish_behaviors() -> void:
 		# Subtle vertical wobble
 		velocity.y += sin(float(ticks) / 500.0) * 0.1
 		
-		# Water flow
-		if water_system.has_method("get_flow_direction") and water_system.has_method("get_flow_strength"):
-			var flow_direction: Vector3 = water_system.get_flow_direction()
-			var flow_strength: float = water_system.get_flow_strength()
-			velocity += flow_direction * flow_strength * 0.3
+		# Water flow — read from World so we don't duck-type every tick.
+		if typeof(World) != TYPE_NIL:
+			velocity += World.get_flow_direction() * World.get_flow_strength() * 0.3
 		
 		# Collision-aware move
 		var xf: Transform3D = fish.global_transform
@@ -281,10 +280,9 @@ func get_random_position_for_fish(fish: Node3D) -> Vector3:
 	)
 	var target: Vector3 = initial_position + random_offset
 	
-	if water_system.has_method("get_water_level"):
-		var water_level: float = water_system.get_water_level()
-		target.y = min(target.y, water_level - 0.5)
-	
+	if water_system != null:
+		target.y = min(target.y, water_system.get_water_level() - 0.5)
+
 	return target
 
 # Clear all fish in a specific chunk
@@ -340,7 +338,7 @@ func start_fish_jump(fish: Node3D) -> void:
 	fish.set_meta("jump_height", jump_height)
 	fish.set_meta("jump_duration", jump_duration)
 	
-	if water_system.has_method("create_splash_effect"):
+	if water_system != null:
 		var splash_pos: Vector3 = fish.global_position
 		splash_pos.y = water_level
 		water_system.create_splash_effect(splash_pos, 0.5)
@@ -357,7 +355,7 @@ func continue_fish_jump(fish: Node3D, delta: float) -> void:
 	if jump_progress >= 1.0:
 		fish.set_meta("is_jumping", false)
 		fish.global_position = jump_end
-		if water_system.has_method("create_splash_effect"):
+		if water_system != null:
 			var water_level: float = water_system.get_water_level()
 			var splash_pos: Vector3 = fish.global_position
 			splash_pos.y = water_level
