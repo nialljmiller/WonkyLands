@@ -3,12 +3,12 @@ extends Node3D
 class_name RippleSystem
 
 # Ripple settings
-@export var ripple_resolution = 256  # Size of the ripple texture (NxN)
+@export var ripple_resolution = 128  # Size of the ripple texture (NxN) — 128² = 16k pixels, 4× cheaper than 256²
 @export var ripple_size = 20.0  # World size in meters that the ripple texture covers
 @export var ripple_strength = 1.0  # Overall strength of ripples
 @export var ripple_propagation_speed = 1.0  # How fast ripples move outward
 @export var ripple_damping = 0.98  # How quickly ripples fade out (0-1)
-@export var ripple_update_interval = 0.05  # Seconds between ripple updates
+@export var ripple_update_interval = 0.067  # Seconds between ripple updates (~15 Hz)
 @export var max_ripples_per_frame = 5  # Maximum ripples to process per frame
 
 # Interactive ripple settings
@@ -31,6 +31,13 @@ var active_ripples = []  # List of ripples being processed
 var player_ripple_timer = 0.0  # Timer for player ripples
 var update_timer = 0.0  # Timer for updates
 var debug_view = null  # Debug visualization
+
+# Short-circuit: don't run the per-pixel wave sim when nothing is
+# happening and the buffer has fully damped out. Cleared whenever a new
+# ripple is pushed; re-asserted after several empty ticks.
+var _settled: bool = true
+var _ticks_since_activity: int = 0
+const _SETTLE_TICKS: int = 60
 
 func _ready():
 	# Resolve water system via World — no parent-walking, no has_method probes.
@@ -94,15 +101,27 @@ func create_debug_view():
 
 # Update the ripple simulation
 func update_ripple_simulation():
+	# Short-circuit: if nothing is active and the buffer has had enough
+	# ticks to damp out, the 16k-pixel loop would just be churning zeros.
+	if _settled and active_ripples.is_empty():
+		return
+	if active_ripples.is_empty():
+		_ticks_since_activity += 1
+		if _ticks_since_activity >= _SETTLE_TICKS:
+			_settled = true
+			_ticks_since_activity = 0
+	else:
+		_ticks_since_activity = 0
+
 	# Swap buffers
 	var temp = previous_buffer
 	previous_buffer = current_buffer
 	current_buffer = temp
-	
+
 	# Water wave equation parameters
 	var damping = ripple_damping
 	var propagation_speed = ripple_propagation_speed
-	
+
 	# Simulate wave propagation using the wave equation
 	for y in range(1, ripple_resolution - 1):
 		for x in range(1, ripple_resolution - 1):
@@ -192,8 +211,7 @@ func add_ripple(position: Vector3, strength: float = 1.0, radius: float = 0.2, l
 	# Make sure position is at water level
 	var water_level = water_system.get_water_level()
 	position.y = water_level
-	
-	# Create ripple
+
 	var ripple = {
 		"position": position,
 		"strength": strength * ripple_strength,
@@ -202,8 +220,10 @@ func add_ripple(position: Vector3, strength: float = 1.0, radius: float = 0.2, l
 		"age": 0.0,
 		"lifetime": lifetime
 	}
-	
+
 	active_ripples.append(ripple)
+	_settled = false
+	_ticks_since_activity = 0
 
 # Add splash ripple (stronger, bigger)
 func add_splash_ripple(position: Vector3, size: float = 1.0):
