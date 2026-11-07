@@ -150,11 +150,9 @@ func create_fish_mesh():
 	_remove_existing_mesh()
 	tail_pivot = null
 
-	# Fish-shape convention in this function:
-	#   -Z = nose (forward), +Z = tail. Body extents:
-	#   length along Z = fish_size.x, height along Y = fish_size.y,
-	#   width along X = fish_size.z. (This matches how the fish Node3D
-	#   rotates — its own -Z is forward.)
+	# Fish-shape convention:
+	#   -Z = nose (forward), +Z = tail. Length along Z = fish_size.x,
+	#   height along Y = fish_size.y, width along X = fish_size.z.
 	var length: float = fish_size.x
 	var height: float = fish_size.y
 	var width: float = fish_size.z
@@ -165,72 +163,76 @@ func create_fish_mesh():
 	var rig := Node3D.new()
 	rig.name = "FishRig"
 
-	# ---- Body: unit sphere scaled into an ellipsoid ----
+	# ---- Body: proper tapered teardrop mesh ----
 	var body := MeshInstance3D.new()
 	body.name = "Body"
-	var sphere := SphereMesh.new()
-	sphere.radius = 0.5
-	sphere.height = 1.0
-	sphere.radial_segments = 10
-	sphere.rings = 6
-	body.mesh = sphere
-	body.scale = Vector3(width, height, length)
+	body.mesh = _build_tapered_body(length, height, width)
 	body.material_override = body_mat
 	rig.add_child(body)
 
-	# ---- Dorsal fin on top (flat triangular prism) ----
+	# ---- Dorsal fin: curved triangle on top ----
 	var dorsal := MeshInstance3D.new()
 	dorsal.name = "Dorsal"
-	var dorsal_mesh := PrismMesh.new()
-	dorsal_mesh.size = Vector3(width * 0.3, height * 0.7, length * 0.4)
-	dorsal.mesh = dorsal_mesh
+	dorsal.mesh = _build_dorsal_fin(length * 0.4, height * 0.55, width * 0.08)
 	dorsal.material_override = body_mat
-	dorsal.position = Vector3(0.0, height * 0.55, length * 0.05)
+	dorsal.position = Vector3(0.0, height * 0.42, length * 0.0)
 	rig.add_child(dorsal)
 
 	# ---- Pectoral fins on sides (angled flat flaps) ----
 	for side in [-1.0, 1.0]:
 		var fin := MeshInstance3D.new()
 		fin.name = "PectoralFin"
-		var fin_mesh := PrismMesh.new()
-		fin_mesh.size = Vector3(length * 0.25, height * 0.05, width * 1.6)
-		fin.mesh = fin_mesh
+		fin.mesh = _build_fin_blade(length * 0.22, width * 1.4, height * 0.04)
 		fin.material_override = body_mat
-		fin.position = Vector3(side * width * 0.55, -height * 0.05, -length * 0.1)
-		fin.rotation_degrees = Vector3(0.0, 90.0 * side, -20.0 * side)
+		fin.position = Vector3(side * width * 0.42, -height * 0.05, -length * 0.08)
+		fin.rotation_degrees = Vector3(0.0, 90.0 * side, -25.0 * side)
 		rig.add_child(fin)
 
-	# ---- Tail pivot + tail fin (pivot is animated by _physics_process) ----
+	# ---- Tail: pivot for wiggle, forked fin at the end ----
 	tail_pivot = Node3D.new()
 	tail_pivot.name = "TailPivot"
-	tail_pivot.position = Vector3(0.0, 0.0, length * 0.5)
+	tail_pivot.position = Vector3(0.0, 0.0, length * 0.45)
 	var tail_fin := MeshInstance3D.new()
 	tail_fin.name = "TailFin"
-	var tail_mesh := PrismMesh.new()
-	tail_mesh.size = Vector3(width * 0.1, height * 1.1, length * 0.5)
-	tail_fin.mesh = tail_mesh
+	tail_fin.mesh = _build_forked_tail(length * 0.35, height * 1.1, width * 0.06)
 	tail_fin.material_override = body_mat
-	tail_fin.position = Vector3(0.0, 0.0, length * 0.25)
+	tail_fin.position = Vector3(0.0, 0.0, length * 0.15)
 	tail_pivot.add_child(tail_fin)
 	rig.add_child(tail_pivot)
 
-	# ---- Eyes: 2 small black-glossy spheres near the nose ----
-	var eye_mat := StandardMaterial3D.new()
-	eye_mat.albedo_color = Color(0.05, 0.05, 0.08)
-	eye_mat.metallic = 0.5
-	eye_mat.roughness = 0.2
+	# ---- Eyes with pupil + sclera ----
+	var eye_white_mat := StandardMaterial3D.new()
+	eye_white_mat.albedo_color = Color(0.92, 0.88, 0.8)
+	eye_white_mat.metallic = 0.1
+	eye_white_mat.roughness = 0.5
+	var pupil_mat := StandardMaterial3D.new()
+	pupil_mat.albedo_color = Color(0.05, 0.05, 0.08)
+	pupil_mat.metallic = 0.3
+	pupil_mat.roughness = 0.2
 	for side in [-1.0, 1.0]:
 		var eye := MeshInstance3D.new()
 		eye.name = "Eye"
 		var eye_mesh := SphereMesh.new()
-		eye_mesh.radius = height * 0.18
-		eye_mesh.height = height * 0.36
-		eye_mesh.radial_segments = 6
-		eye_mesh.rings = 3
+		eye_mesh.radius = height * 0.17
+		eye_mesh.height = height * 0.34
+		eye_mesh.radial_segments = 8
+		eye_mesh.rings = 4
 		eye.mesh = eye_mesh
-		eye.material_override = eye_mat
-		eye.position = Vector3(side * width * 0.42, height * 0.15, -length * 0.35)
+		eye.material_override = eye_white_mat
+		eye.position = Vector3(side * width * 0.4, height * 0.15, -length * 0.33)
 		rig.add_child(eye)
+
+		var pupil := MeshInstance3D.new()
+		pupil.name = "Pupil"
+		var pupil_mesh := SphereMesh.new()
+		pupil_mesh.radius = height * 0.09
+		pupil_mesh.height = height * 0.18
+		pupil_mesh.radial_segments = 6
+		pupil_mesh.rings = 3
+		pupil.mesh = pupil_mesh
+		pupil.material_override = pupil_mat
+		pupil.position = Vector3(side * width * 0.5, height * 0.15, -length * 0.36)
+		rig.add_child(pupil)
 
 	# ---- Style-specific extras ----
 	if mesh_style == MeshStyle.STRIPED:
@@ -243,6 +245,124 @@ func create_fish_mesh():
 		lure_mesh = null
 
 	add_child(rig)
+
+
+# ---------------------------------------------------------------------
+# Procedural body: rings of vertices along Z, radii following a tapered
+# teardrop profile. Welded into a watertight mesh via SurfaceTool.
+# ---------------------------------------------------------------------
+func _build_tapered_body(length: float, height: float, width: float) -> ArrayMesh:
+	# (z_frac in [-0.5, +0.5], radius_frac in [0,1] of max width,
+	#  height_frac in [0,1] of max height).
+	# Front taper (nose) + mid bulge + narrowing peduncle at the tail.
+	var profile := [
+		[-0.50, 0.00, 0.00],
+		[-0.46, 0.20, 0.24],
+		[-0.38, 0.45, 0.55],
+		[-0.25, 0.75, 0.85],
+		[-0.08, 1.00, 1.00],
+		[ 0.08, 0.96, 0.98],
+		[ 0.22, 0.75, 0.82],
+		[ 0.33, 0.45, 0.55],
+		[ 0.42, 0.18, 0.28],
+		[ 0.47, 0.06, 0.10],   # tail peduncle
+	]
+	var segments: int = 10
+
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	var rings: Array = []
+	for row in profile:
+		var z: float = row[0] * length
+		var rx: float = row[1] * width * 0.5
+		var ry: float = row[2] * height * 0.5
+		var ring: Array = []
+		for i in range(segments):
+			var a: float = TAU * float(i) / float(segments)
+			ring.append(Vector3(rx * cos(a), ry * sin(a), z))
+		rings.append(ring)
+
+	for r in range(rings.size() - 1):
+		var a: Array = rings[r]
+		var b: Array = rings[r + 1]
+		for i in range(segments):
+			var j: int = (i + 1) % segments
+			# two triangles per quad
+			st.add_vertex(a[i])
+			st.add_vertex(a[j])
+			st.add_vertex(b[i])
+
+			st.add_vertex(a[j])
+			st.add_vertex(b[j])
+			st.add_vertex(b[i])
+
+	# Cap the nose (first ring is the tip itself; close off cone to tip)
+	# — not needed since ring 0 has radius ~0 which collapses to a point.
+	# Cap the back similarly.
+
+	st.generate_normals()
+	return st.commit()
+
+
+# Dorsal fin: sloped triangle, taller at front, lower at back.
+func _build_dorsal_fin(l: float, h: float, w: float) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# Two-sided (double-sided triangle) so it's visible from both sides.
+	var p0 := Vector3(-w, 0.0,  l * 0.5)   # root back
+	var p1 := Vector3(-w, 0.0, -l * 0.5)   # root front
+	var p2 := Vector3(-w, h,    -l * 0.1)  # tip (biased forward)
+	var p0r := Vector3( w, 0.0,  l * 0.5)
+	var p1r := Vector3( w, 0.0, -l * 0.5)
+	var p2r := Vector3( w, h,   -l * 0.1)
+	# left face
+	st.add_vertex(p0); st.add_vertex(p1); st.add_vertex(p2)
+	st.add_vertex(p0); st.add_vertex(p2); st.add_vertex(p1)
+	# right face
+	st.add_vertex(p0r); st.add_vertex(p2r); st.add_vertex(p1r)
+	st.add_vertex(p0r); st.add_vertex(p1r); st.add_vertex(p2r)
+	# Bridge top edge (thin quad between the two triangles)
+	st.add_vertex(p2); st.add_vertex(p2r); st.add_vertex(p1)
+	st.add_vertex(p1); st.add_vertex(p2r); st.add_vertex(p1r)
+	st.generate_normals()
+	return st.commit()
+
+
+# Pectoral/general fin blade: flat elongated triangle.
+func _build_fin_blade(l: float, w: float, _t: float) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var p0 := Vector3(-w * 0.5, 0.0, -l * 0.5)   # root inner
+	var p1 := Vector3(-w * 0.5, 0.0,  l * 0.5)   # root outer
+	var p2 := Vector3( w * 0.5, 0.0,  0.0)       # tip
+	# double-sided
+	st.add_vertex(p0); st.add_vertex(p1); st.add_vertex(p2)
+	st.add_vertex(p0); st.add_vertex(p2); st.add_vertex(p1)
+	st.generate_normals()
+	return st.commit()
+
+
+# Forked tail fin: two triangle lobes meeting at the root (V shape).
+func _build_forked_tail(l: float, h: float, _w: float) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# Root point at local origin.
+	var root := Vector3.ZERO
+	# Upper lobe tip
+	var upper := Vector3(0.0,  h * 0.55, l)
+	# Lower lobe tip
+	var lower := Vector3(0.0, -h * 0.55, l)
+	# Center-of-fork point (slightly inset)
+	var center := Vector3(0.0, 0.0, l * 0.5)
+	# Upper triangle (root, upper, center) front + back faces
+	st.add_vertex(root); st.add_vertex(upper); st.add_vertex(center)
+	st.add_vertex(root); st.add_vertex(center); st.add_vertex(upper)
+	# Lower triangle
+	st.add_vertex(root); st.add_vertex(center); st.add_vertex(lower)
+	st.add_vertex(root); st.add_vertex(lower); st.add_vertex(center)
+	st.generate_normals()
+	return st.commit()
 
 
 # ---------------------------------------------------------------------

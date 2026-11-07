@@ -314,11 +314,15 @@ func _apply_flight_physics(delta: float) -> void:
 	# Dihedral: sideslip produces a roll torque that rolls away from the slip.
 	tau_roll += -dihedral_roll_coeff * b_err * q * wing_area * 0.25
 
-	# ---------- Angular damping ----------
-	# Scales with q (aero damping) + a small viscous term for low speed.
-	tau_pitch += -(pitch_damping * q + pitch_viscous) * angular_velocity_local.x * h_tail_area
-	tau_yaw   += -(yaw_damping   * q + yaw_viscous)   * angular_velocity_local.y * v_tail_area
-	tau_roll  += -(roll_damping  * q + roll_viscous)  * angular_velocity_local.z * wing_area * 0.5
+	# ---------- Angular damping (IMPLICIT) ----------
+	# Damping is held out of tau_* and applied as an implicit integration
+	# step at the end:   ω ← ω / (1 + c·dt).  This is unconditionally
+	# stable; the earlier explicit version shook itself apart at ~150+ m/s
+	# because `damping * q * dt / I` exceeded 2, which blows up Euler.
+	# Compute the per-axis decay coefficients now so we can use them below.
+	var damp_coeff_pitch: float = (pitch_damping * q + pitch_viscous) * h_tail_area / spec.inertia.x
+	var damp_coeff_yaw:   float = (yaw_damping   * q + yaw_viscous)   * v_tail_area / spec.inertia.y
+	var damp_coeff_roll:  float = (roll_damping  * q + roll_viscous)  * wing_area * 0.5 / spec.inertia.z
 
 	# ---------- Engine secondary effects ----------
 	# P-factor: at high power + high AoA the prop yaws the nose left.
@@ -379,13 +383,17 @@ func _apply_flight_physics(delta: float) -> void:
 	velocity += (force_world / spec.mass) * delta
 
 	# ---------- Angular integration ----------
-	# inertia = (I_xx pitch, I_yy yaw, I_zz roll)
+	# 1. Explicit step for the driving torques (controls + stability + engine).
+	# 2. Implicit decay for the damping term, unconditionally stable.
 	var ang_accel: Vector3 = Vector3(
 		tau_pitch / spec.inertia.x,
 		tau_yaw   / spec.inertia.y,
 		tau_roll  / spec.inertia.z,
 	)
 	angular_velocity_local += ang_accel * delta
+	angular_velocity_local.x /= 1.0 + damp_coeff_pitch * delta
+	angular_velocity_local.y /= 1.0 + damp_coeff_yaw * delta
+	angular_velocity_local.z /= 1.0 + damp_coeff_roll * delta
 
 	# Clamp rates.  On the ground, pitch rate is strongly limited so the
 	# gear can't be levered out of alignment.  In the air, allow spirited

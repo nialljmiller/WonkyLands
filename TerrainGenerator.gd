@@ -3,17 +3,21 @@ extends Node3D
 # Terrain generation parameters
 @export var chunk_size: int = 128  # Size of each chunk
 @export var view_distance: int = 1  # Legacy — used only for trees (kept close)
-@export var terrain_view_distance: int = 7  # Terrain mesh ring. Covered by LOD.
-@export var water_view_distance: int = 4    # Water plane ring.
-@export var tree_view_distance: int = 1     # Near-detail tree ring (expensive).
-@export var chunk_update_interval: float = 0.3  # Re-check chunk loading this often (seconds)
+@export var terrain_view_distance: int = 10  # Terrain mesh ring. Covered by LOD.
+@export var water_view_distance: int = 5     # Water plane ring.
+@export var tree_view_distance: int = 1      # Near-detail tree ring (expensive).
+@export var chunk_update_interval: float = 0.25  # Re-check chunk loading this often (seconds)
+
+# Bias chunks in the direction of motion when queueing worker builds.
+# Higher = more aggressive forward streaming.
+@export var motion_priority_bias: float = 4.0
 
 # LOD config. lod_rings[i] = maximum Chebyshev-distance (in chunks) for LOD i.
 # Anything beyond the last entry uses the final LOD. subdivisions[i] is the
 # grid density for that LOD — a chunk at LOD 0 has subdivisions^2 quads.
-# More rings = smoother LOD transitions as the player moves.
-@export var lod_rings: PackedInt32Array = PackedInt32Array([1, 2, 4])
-@export var lod_subdivisions: PackedInt32Array = PackedInt32Array([128, 64, 24, 8])
+# Five levels now so very-far horizon chunks are nearly free.
+@export var lod_rings: PackedInt32Array = PackedInt32Array([1, 2, 4, 7])
+@export var lod_subdivisions: PackedInt32Array = PackedInt32Array([128, 64, 24, 8, 4])
 
 @export var noise_scale: float = 0.05
 @export var amplitude: float = 50.0
@@ -278,6 +282,19 @@ func update_terrain_chunks(player_pos: Vector3):
 	var chunks_to_keep: Dictionary = {}
 	var to_queue: Array = []
 
+	# Motion direction in XZ (used to prioritise chunks ahead of the
+	# player so the horizon they're flying toward loads first).
+	var motion_xz: Vector2 = Vector2.ZERO
+	var tracked: Node3D = _tracked_body()
+	if tracked != null and tracked.has_method("get") and tracked.get("velocity") != null:
+		var v: Vector3 = tracked.velocity
+		motion_xz = Vector2(v.x, v.z)
+		var m: float = motion_xz.length()
+		if m > 1.0:
+			motion_xz /= m
+		else:
+			motion_xz = Vector2.ZERO
+
 	for x in range(pcx - vd, pcx + vd + 1):
 		for z in range(pcz - vd, pcz + vd + 1):
 			var cp := Vector2(x, z)
@@ -293,18 +310,22 @@ func update_terrain_chunks(player_pos: Vector3):
 			if pending_lod == desired_lod:
 				continue
 
-			# Need to (re)build. Prioritise by Chebyshev distance so
-			# chunks near the player come up first; chunks far out can
-			# wait a few seconds without the player noticing.
 			var dx: int = x - pcx
 			var dz: int = z - pcz
+			var chunk_offset := Vector2(float(dx), float(dz))
+			# Base priority: Chebyshev distance² (closer first).
+			var priority: float = dx * dx + dz * dz
+			# Motion bias: chunks whose offset aligns with velocity get a
+			# lower priority value → queued first.
+			if motion_xz != Vector2.ZERO and chunk_offset.length() > 0.01:
+				priority -= motion_priority_bias * chunk_offset.normalized().dot(motion_xz)
 			to_queue.append({
 				"pos": cp,
 				"lod": desired_lod,
-				"d2": dx * dx + dz * dz,
+				"pr": priority,
 			})
 
-	to_queue.sort_custom(func(a, b): return a.d2 < b.d2)
+	to_queue.sort_custom(func(a, b): return a.pr < b.pr)
 	for req in to_queue:
 		generate_terrain_chunk(req.pos, req.lod)
 
@@ -454,16 +475,24 @@ func _finalize_chunk(chunk_pos: Vector2, lod: int, world_pos_x: float, world_pos
 		World.notify_chunk_loaded(chunk_pos, chunk_node)
 
 func _chunk_is_still_wanted(chunk_pos: Vector2) -> bool:
-	var player: Node3D = null
-	if typeof(World) != TYPE_NIL:
-		player = World.get_player()
-	var ref_pos: Vector3 = player.global_position if player else Vector3.ZERO
-	var plane = get_node_or_null("BushPlane")
-	if plane and plane.get("controlling_player") == player:
-		ref_pos = plane.global_position
+	var ref_pos: Vector3 = Vector3.ZERO
+	var tracked: Node3D = _tracked_body()
+	if tracked != null:
+		ref_pos = tracked.global_position
 	var pcx: float = floor(ref_pos.x / chunk_size)
 	var pcz: float = floor(ref_pos.z / chunk_size)
 	return abs(chunk_pos.x - pcx) <= terrain_view_distance and abs(chunk_pos.y - pcz) <= terrain_view_distance
+
+# Returns the body whose position + velocity should drive chunk streaming:
+# the plane when the player is piloting it, otherwise the player.
+func _tracked_body() -> Node3D:
+	var player: Node3D = null
+	if typeof(World) != TYPE_NIL:
+		player = World.get_player()
+	var plane = get_node_or_null("BushPlane")
+	if plane and plane.get("controlling_player") == player and is_instance_valid(plane):
+		return plane
+	return player
 
 # Removes a chunk that's outside the view distance
 func remove_terrain_chunk(chunk_pos: Vector2):
