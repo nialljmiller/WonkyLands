@@ -46,11 +46,6 @@ plane_pitch_down={
 "events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":87,"physical_keycode":87,"key_label":0,"unicode":119,"location":0,"echo":false,"script":null)
 ]
 }
-dev_autopilot={
-"deadzone": 0.5,
-"events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":80,"physical_keycode":80,"key_label":0,"unicode":112,"location":0,"echo":false,"script":null)
-]
-}
 plane_roll_left={
 "deadzone": 0.5,
 "events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":65,"physical_keycode":65,"key_label":0,"unicode":97,"location":0,"echo":false,"script":null)

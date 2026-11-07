@@ -80,7 +80,8 @@ func update_tree_chunks(player_pos: Vector3, view_distance: int, chunk_size: int
 			var chunk_pos := Vector2(x, z)
 			keep[chunk_pos] = true
 			if terrain_generator.loaded_chunks.has(chunk_pos) and not tree_positions.has(chunk_pos):
-				var chunk_node: Node3D = terrain_generator.loaded_chunks[chunk_pos]
+				# loaded_chunks is now a {node, lod} dict per entry.
+				var chunk_node: Node3D = terrain_generator.loaded_chunks[chunk_pos].node
 				var biome: int = terrain_generator.determine_biome(
 					Vector2(x * chunk_size + chunk_size * 0.5, z * chunk_size + chunk_size * 0.5)
 				)

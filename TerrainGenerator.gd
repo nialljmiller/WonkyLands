@@ -2,7 +2,18 @@ extends Node3D
 
 # Terrain generation parameters
 @export var chunk_size: int = 128  # Size of each chunk
-@export var view_distance: int = 1  # How many chunks to render around player
+@export var view_distance: int = 1  # Legacy — used only for trees (kept close)
+@export var terrain_view_distance: int = 5  # Terrain mesh ring. Covered by LOD.
+@export var water_view_distance: int = 3    # Water plane ring.
+@export var tree_view_distance: int = 1     # Tree placement — expensive, keep close.
+@export var chunk_update_interval: float = 0.4  # Re-check chunk loading this often (seconds)
+
+# LOD config. lod_rings[i] = maximum Chebyshev-distance (in chunks) for LOD i.
+# Anything beyond the last entry uses the final LOD. subdivisions[i] is the
+# grid density for that LOD — a chunk at LOD 0 has subdivisions^2 quads.
+@export var lod_rings: PackedInt32Array = PackedInt32Array([1, 3])
+@export var lod_subdivisions: PackedInt32Array = PackedInt32Array([128, 32, 8])
+
 @export var noise_scale: float = 0.05
 @export var amplitude: float = 50.0
 
@@ -38,9 +49,11 @@ var loaded_chunks = {}  # Dictionary to store active chunks
 var current_chunk = Vector2.ZERO  # Current chunk the player is in
 var tree_system = null
 
-# Chunk coords that have a worker task in flight — we don't double-queue
-# them, and the main-thread finalize checks this before adding the node.
+# _pending_chunks maps chunk_pos → lod being built. We don't double-queue
+# the same chunk+lod pair. loaded_chunks now maps chunk_pos → {node, lod}
+# so we can detect when a chunk needs to be rebuilt at a different LOD.
 var _pending_chunks: Dictionary = {}
+var _chunk_update_timer: float = 0.0
 
 # Biome types
 enum BiomeType {
@@ -102,30 +115,34 @@ func _ready():
 		tree_timer.timeout.connect(func(): initialize_tree_system())
 
 func _process(delta):
-	# Check if player exists
 	var player = get_node_or_null("Player")
-	if player:
-		# Get player position and calculate current chunk
-		var player_pos = player.global_position
-		var player_chunk = Vector2(
-			floor(player_pos.x / chunk_size),
-			floor(player_pos.z / chunk_size)
-		)
-		
-		# If player moved to a new chunk, update visible chunks
-		if player_chunk != current_chunk:
-			current_chunk = player_chunk
-			
-			# Update terrain chunks FIRST
-			update_terrain_chunks(player_pos)
-			
-			# Update water chunks AFTER terrain
-			if enable_water and water_system:
-				water_system.update_water_chunks(player_pos, view_distance, chunk_size)
-				
-			# Update tree chunks LAST, after terrain is updated
-			if enable_trees and tree_system:
-				tree_system.update_tree_chunks(player_pos, view_distance, chunk_size)
+	if not player:
+		return
+	# Follow whichever body the player is driving (plane cockpit when
+	# seated) — that's where new chunks are needed.
+	var reference_pos: Vector3 = player.global_position
+	if typeof(World) != TYPE_NIL:
+		var plane = get_node_or_null("BushPlane")
+		if plane and plane.has_method("get") and plane.get("controlling_player") == player:
+			reference_pos = plane.global_position
+
+	var player_chunk = Vector2(
+		floor(reference_pos.x / chunk_size),
+		floor(reference_pos.z / chunk_size)
+	)
+	var crossed_boundary: bool = player_chunk != current_chunk
+	_chunk_update_timer += delta
+	if not crossed_boundary and _chunk_update_timer < chunk_update_interval:
+		return
+	_chunk_update_timer = 0.0
+	current_chunk = player_chunk
+
+	# Terrain first so downstream systems can query the right heights.
+	update_terrain_chunks(reference_pos)
+	if enable_water and water_system:
+		water_system.update_water_chunks(reference_pos, water_view_distance, chunk_size)
+	if enable_trees and tree_system:
+		tree_system.update_tree_chunks(reference_pos, tree_view_distance, chunk_size)
 
 # Initialize tree system
 func initialize_tree_system():
@@ -173,10 +190,6 @@ func add_plane_to_scene():
 		base_origin.y = (ground + 1.5) if ground != null else max(water_level + 2.0, 5.0)
 		spawn_origin = base_origin
 
-	# TEMP: dev autopilot for headless flight-test.
-	if OS.has_environment("WONKY_PLANE_AUTOPILOT"):
-		plane.dev_auto_pilot = true
-		print("[spawn] plane autopilot enabled, position=", spawn_origin)
 	plane.global_transform = Transform3D(Basis.IDENTITY, spawn_origin)
 	add_child(plane)
 
@@ -233,76 +246,126 @@ func initialize_water_system():
 		player_pos = $Player.global_position
 	water_system.update_water_chunks(player_pos, view_distance, chunk_size)
 
-# Updates which terrain chunks are visible based on player position
-func update_terrain_chunks(player_pos: Vector3):
-	var center_chunk_x = floor(player_pos.x / chunk_size)
-	var center_chunk_z = floor(player_pos.z / chunk_size)
-	
-	# Track which chunks should remain loaded
-	var chunks_to_keep = {}
-	
-	# Generate all chunks within view distance
-	for x in range(center_chunk_x - view_distance, center_chunk_x + view_distance + 1):
-		for z in range(center_chunk_z - view_distance, center_chunk_z + view_distance + 1):
-			var chunk_pos = Vector2(x, z)
-			chunks_to_keep[chunk_pos] = true
-			
-			# If chunk doesn't exist, generate it
-			if not loaded_chunks.has(chunk_pos):
-				generate_terrain_chunk(chunk_pos)
-	
-	# Remove chunks outside view distance
-	var chunks_to_remove = []
-	for chunk_pos in loaded_chunks.keys():
-		if not chunks_to_keep.has(chunk_pos):
-			chunks_to_remove.append(chunk_pos)
-	
-	for chunk_pos in chunks_to_remove:
-		remove_terrain_chunk(chunk_pos)
+# ---------------------------------------------------------------------
+# LOD helpers
+# ---------------------------------------------------------------------
+func _subdivisions_for_lod(lod: int) -> int:
+	var i: int = clamp(lod, 0, lod_subdivisions.size() - 1)
+	return int(lod_subdivisions[i])
 
-# Generates a single terrain chunk. The heavy math (vertex grid,
-# normals, triangle list) runs on a worker thread via WorkerThreadPool;
-# scene-tree ops happen in _finalize_chunk on the main thread. This
-# eliminates the frame spike on chunk boundary crossings.
-func generate_terrain_chunk(chunk_pos: Vector2):
-	if _pending_chunks.has(chunk_pos) or loaded_chunks.has(chunk_pos):
+func _lod_for_chunk(chunk_pos: Vector2, player_chunk: Vector2) -> int:
+	var dist: int = int(max(abs(chunk_pos.x - player_chunk.x), abs(chunk_pos.y - player_chunk.y)))
+	for i in range(lod_rings.size()):
+		if dist <= int(lod_rings[i]):
+			return i
+	return lod_rings.size()
+
+# ---------------------------------------------------------------------
+# update_terrain_chunks — called whenever the player crosses a chunk
+# boundary OR the periodic timer fires. Figures out the ideal LOD for
+# every chunk in view, queues builds in near-first order, and frees
+# chunks that have rolled out of range. Chunks already loaded at the
+# correct LOD are left alone; chunks loaded at the wrong LOD are
+# rebuilt via a swap-on-finalize (the old node stays rendered until
+# the new one is ready, so there's no visible gap).
+# ---------------------------------------------------------------------
+func update_terrain_chunks(player_pos: Vector3):
+	var pcx: int = int(floor(player_pos.x / chunk_size))
+	var pcz: int = int(floor(player_pos.z / chunk_size))
+	var player_chunk := Vector2(pcx, pcz)
+	var vd: int = terrain_view_distance
+	var chunks_to_keep: Dictionary = {}
+	var to_queue: Array = []
+
+	for x in range(pcx - vd, pcx + vd + 1):
+		for z in range(pcz - vd, pcz + vd + 1):
+			var cp := Vector2(x, z)
+			chunks_to_keep[cp] = true
+			var desired_lod: int = _lod_for_chunk(cp, player_chunk)
+
+			var existing = loaded_chunks.get(cp, null)
+			if existing != null and existing.lod == desired_lod:
+				continue  # already correct
+
+			# Skip if a build for this exact LOD is already in flight.
+			var pending_lod = _pending_chunks.get(cp, -1)
+			if pending_lod == desired_lod:
+				continue
+
+			# Need to (re)build. Prioritise by Chebyshev distance so
+			# chunks near the player come up first; chunks far out can
+			# wait a few seconds without the player noticing.
+			var dx: int = x - pcx
+			var dz: int = z - pcz
+			to_queue.append({
+				"pos": cp,
+				"lod": desired_lod,
+				"d2": dx * dx + dz * dz,
+			})
+
+	to_queue.sort_custom(func(a, b): return a.d2 < b.d2)
+	for req in to_queue:
+		generate_terrain_chunk(req.pos, req.lod)
+
+	# Unload chunks that rolled out of view.
+	var to_remove: Array = []
+	for cp in loaded_chunks.keys():
+		if not chunks_to_keep.has(cp):
+			to_remove.append(cp)
+	for cp in to_remove:
+		remove_terrain_chunk(cp)
+
+# ---------------------------------------------------------------------
+# generate_terrain_chunk — enqueues a worker task for one chunk at the
+# given LOD. Does nothing if that exact LOD is already pending or
+# already loaded.
+# ---------------------------------------------------------------------
+func generate_terrain_chunk(chunk_pos: Vector2, lod: int) -> void:
+	if _pending_chunks.has(chunk_pos) and int(_pending_chunks[chunk_pos]) == lod:
 		return
-	_pending_chunks[chunk_pos] = true
+	var existing = loaded_chunks.get(chunk_pos, null)
+	if existing != null and existing.lod == lod:
+		return
+	_pending_chunks[chunk_pos] = lod
 	WorkerThreadPool.add_task(
-		Callable(self, "_build_chunk_on_worker").bind(chunk_pos),
+		Callable(self, "_build_chunk_on_worker").bind(chunk_pos, lod),
 		false,
-		"wonkylands.chunk.%d.%d" % [chunk_pos.x, chunk_pos.y]
+		"wonkylands.chunk.%d.%d.lod%d" % [chunk_pos.x, chunk_pos.y, lod]
 	)
 
-# Runs on a worker thread. FastNoiseLite and the local math here are
-# safe for concurrent reads; we never touch the scene tree from here.
-func _build_chunk_on_worker(chunk_pos: Vector2) -> void:
+# ---------------------------------------------------------------------
+# Worker-thread build. `sub` is grid subdivisions; vertex count scales
+# as (sub+1)². Collision is only built for LOD 0 chunks (the ring
+# around the player where anything can walk / drive / crash).
+# ---------------------------------------------------------------------
+func _build_chunk_on_worker(chunk_pos: Vector2, lod: int) -> void:
+	var sub: int = _subdivisions_for_lod(lod)
+	var step: float = float(chunk_size) / float(sub)
 	var world_pos_x: float = chunk_pos.x * chunk_size
 	var world_pos_z: float = chunk_pos.y * chunk_size
 	var chunk_center := Vector2(world_pos_x + chunk_size / 2.0, world_pos_z + chunk_size / 2.0)
 	var dominant_biome: int = determine_biome(chunk_center)
 
-	var vertex_count: int = (chunk_size + 1) * (chunk_size + 1)
+	var vertex_count: int = (sub + 1) * (sub + 1)
 	var vertices := PackedVector3Array()
 	vertices.resize(vertex_count)
 	var offset: int = 0
-	for z in range(chunk_size + 1):
-		for x in range(chunk_size + 1):
-			var gx: float = world_pos_x + x
-			var gz: float = world_pos_z + z
-			# get_terrain_height handles base flattening in one place so
-			# player spawn / tree placement / chunk mesh all agree on
-			# ground elevation.
+	for z in range(sub + 1):
+		for x in range(sub + 1):
+			var local_x: float = x * step
+			var local_z: float = z * step
+			var gx: float = world_pos_x + local_x
+			var gz: float = world_pos_z + local_z
 			var y: float = get_terrain_height(gx, gz)
-			vertices[offset] = Vector3(x, y, z)
+			vertices[offset] = Vector3(local_x, y, local_z)
 			offset += 1
 
 	var indices := PackedInt32Array()
-	for z in range(chunk_size):
-		for x in range(chunk_size):
-			var i: int = z * (chunk_size + 1) + x
+	for z in range(sub):
+		for x in range(sub):
+			var i: int = z * (sub + 1) + x
 			var right: int = i + 1
-			var below: int = i + (chunk_size + 1)
+			var below: int = i + (sub + 1)
 			var below_right: int = below + 1
 			indices.append(i)
 			indices.append(right)
@@ -329,34 +392,31 @@ func _build_chunk_on_worker(chunk_pos: Vector2) -> void:
 		var acc: Vector3 = normals[n]
 		normals[n] = acc.normalized() if acc.length_squared() > 0.0 else Vector3.UP
 
-	# Pre-expand collision faces (indexed triangles → triangle list) on
-	# the worker so the main thread just hands them to the shape.
+	# Collision is expensive and only needed for the close ring.
 	var faces := PackedVector3Array()
-	faces.resize(indices.size())
-	for i in range(0, indices.size(), 3):
-		faces[i]     = vertices[indices[i]]
-		faces[i + 1] = vertices[indices[i + 1]]
-		faces[i + 2] = vertices[indices[i + 2]]
+	if lod == 0:
+		faces.resize(indices.size())
+		for i in range(0, indices.size(), 3):
+			faces[i]     = vertices[indices[i]]
+			faces[i + 1] = vertices[indices[i + 1]]
+			faces[i + 2] = vertices[indices[i + 2]]
 
-	call_deferred("_finalize_chunk", chunk_pos, world_pos_x, world_pos_z, dominant_biome,
+	call_deferred("_finalize_chunk", chunk_pos, lod, world_pos_x, world_pos_z, dominant_biome,
 		vertices, indices, normals, faces)
 
-func _finalize_chunk(chunk_pos: Vector2, world_pos_x: float, world_pos_z: float, biome: int,
+func _finalize_chunk(chunk_pos: Vector2, lod: int, world_pos_x: float, world_pos_z: float, biome: int,
 		vertices: PackedVector3Array, indices: PackedInt32Array,
 		normals: PackedVector3Array, faces: PackedVector3Array) -> void:
-	# Player may have moved out of range while this chunk was building.
-	# If so, drop the result instead of adding geometry that'll be freed
-	# next tick anyway.
 	_pending_chunks.erase(chunk_pos)
 	if not _chunk_is_still_wanted(chunk_pos):
 		return
-	if loaded_chunks.has(chunk_pos):
-		return
+	var existing = loaded_chunks.get(chunk_pos, null)
+	if existing != null and existing.lod == lod:
+		return  # became redundant while we were building
 
 	var chunk_node := Node3D.new()
-	chunk_node.name = "Chunk_%d_%d" % [chunk_pos.x, chunk_pos.y]
+	chunk_node.name = "Chunk_%d_%d_L%d" % [chunk_pos.x, chunk_pos.y, lod]
 	chunk_node.position = Vector3(world_pos_x, 0, world_pos_z)
-	add_child(chunk_node)
 
 	var mesh := ArrayMesh.new()
 	var arrays: Array = []
@@ -370,17 +430,25 @@ func _finalize_chunk(chunk_pos: Vector2, world_pos_x: float, world_pos_z: float,
 	mesh_instance.mesh = mesh
 	chunk_node.add_child(mesh_instance)
 
-	var body := StaticBody3D.new()
-	var cs := CollisionShape3D.new()
-	var shape := ConcavePolygonShape3D.new()
-	shape.set_faces(faces)
-	cs.shape = shape
-	body.add_child(cs)
-	chunk_node.add_child(body)
+	if lod == 0 and faces.size() > 0:
+		var body := StaticBody3D.new()
+		var cs := CollisionShape3D.new()
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(faces)
+		cs.shape = shape
+		body.add_child(cs)
+		chunk_node.add_child(body)
 
 	apply_biome_texturing(mesh_instance, biome)
 
-	loaded_chunks[chunk_pos] = chunk_node
+	add_child(chunk_node)
+
+	# Swap: free any previous node at this chunk (different LOD) AFTER
+	# the new one is in-tree so there's no visible gap.
+	if existing != null and is_instance_valid(existing.node):
+		existing.node.queue_free()
+
+	loaded_chunks[chunk_pos] = {"node": chunk_node, "lod": lod}
 	if typeof(World) != TYPE_NIL:
 		World.notify_chunk_loaded(chunk_pos, chunk_node)
 
@@ -388,15 +456,19 @@ func _chunk_is_still_wanted(chunk_pos: Vector2) -> bool:
 	var player: Node3D = null
 	if typeof(World) != TYPE_NIL:
 		player = World.get_player()
-	var player_pos: Vector3 = player.global_position if player else Vector3.ZERO
-	var pcx: float = floor(player_pos.x / chunk_size)
-	var pcz: float = floor(player_pos.z / chunk_size)
-	return abs(chunk_pos.x - pcx) <= view_distance and abs(chunk_pos.y - pcz) <= view_distance
+	var ref_pos: Vector3 = player.global_position if player else Vector3.ZERO
+	var plane = get_node_or_null("BushPlane")
+	if plane and plane.get("controlling_player") == player:
+		ref_pos = plane.global_position
+	var pcx: float = floor(ref_pos.x / chunk_size)
+	var pcz: float = floor(ref_pos.z / chunk_size)
+	return abs(chunk_pos.x - pcx) <= terrain_view_distance and abs(chunk_pos.y - pcz) <= terrain_view_distance
 
 # Removes a chunk that's outside the view distance
 func remove_terrain_chunk(chunk_pos: Vector2):
-	var chunk = loaded_chunks[chunk_pos]
-	chunk.queue_free()
+	var entry = loaded_chunks[chunk_pos]
+	if is_instance_valid(entry.node):
+		entry.node.queue_free()
 	loaded_chunks.erase(chunk_pos)
 	if typeof(World) != TYPE_NIL:
 		World.notify_chunk_unloaded(chunk_pos)

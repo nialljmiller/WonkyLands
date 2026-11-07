@@ -500,10 +500,19 @@ func calculate_primary_moon_position():
 	# Update moon visibility based on its altitude
 	var moon_altitude = calculate_altitude(primary_moon_mesh.position)
 	var moon_visibility = clamp(sin(moon_altitude) + 0.2, 0.0, 1.0)
+	# Hide the moon when below the horizon so we don't render a dark
+	# disc clipping through the sky dome.
+	primary_moon_mesh.visible = moon_altitude > -0.03
 
-	# Update moon light energy based on phase and visibility
-	var phase_factor = (1.0 + cos(moon_to_sun_angle)) / 2.0
-	primary_moon_light.light_energy = primary_moon_intensity * phase_factor * moon_visibility
+	# Phase factor: 1 when sun and moon are opposite (full moon → bright),
+	# 0 when they're aligned (new moon → dark). Earlier version used
+	# (1+cos)/2 which was reversed.
+	var phase_factor = (1.0 - cos(moon_to_sun_angle)) / 2.0
+	# Daytime attenuation. At high sun altitude, the sky is very bright
+	# and the moon washes out; fade its emission so it doesn't read as
+	# a shadow on the sky.
+	var day_dim = 1.0 - clamp(sin(sun_altitude) * 1.6, 0.0, 0.85)
+	primary_moon_light.light_energy = primary_moon_intensity * phase_factor * moon_visibility * day_dim
 
 	if primary_moon_material:
 		var sun_direction = sun_mesh.position - primary_moon_mesh.position
@@ -512,10 +521,12 @@ func calculate_primary_moon_position():
 		else:
 			primary_moon_material.set_shader_parameter("sun_direction", Vector3(0, 0, -1))
 
-		var illumination = clamp(phase_factor * moon_visibility, 0.0, 1.0)
+		var illumination = clamp(phase_factor * moon_visibility * day_dim, 0.0, 1.0)
 		primary_moon_material.set_shader_parameter("phase_strength", illumination)
 
-		var ambient_term = clamp(0.08 + 0.35 * moon_visibility, 0.05, 0.6)
+		# Ambient also dimmed during day so the moon isn't visible as a
+		# glowing blob against bright sky.
+		var ambient_term = clamp(0.08 + 0.35 * moon_visibility, 0.05, 0.6) * day_dim
 		primary_moon_material.set_shader_parameter("ambient_term", ambient_term)
 
 func calculate_secondary_moon_position():
@@ -558,10 +569,12 @@ func calculate_secondary_moon_position():
 	# Update moon visibility based on its altitude
 	var moon_altitude = calculate_altitude(secondary_moon_mesh.position)
 	var moon_visibility = clamp(sin(moon_altitude) + 0.2, 0.0, 1.0)
+	secondary_moon_mesh.visible = moon_altitude > -0.03
 
-	# Update moon light energy based on phase and visibility
-	var phase_factor = (1.0 + cos(moon_to_sun_angle)) / 2.0
-	secondary_moon_light.light_energy = secondary_moon_intensity * phase_factor * moon_visibility
+	# Phase factor: 1 when opposite sun (full moon), 0 when aligned (new moon).
+	var phase_factor = (1.0 - cos(moon_to_sun_angle)) / 2.0
+	var day_dim = 1.0 - clamp(sin(sun_altitude) * 1.6, 0.0, 0.85)
+	secondary_moon_light.light_energy = secondary_moon_intensity * phase_factor * moon_visibility * day_dim
 
 	if secondary_moon_material:
 		var sun_direction = sun_mesh.position - secondary_moon_mesh.position
@@ -570,10 +583,10 @@ func calculate_secondary_moon_position():
 		else:
 				secondary_moon_material.set_shader_parameter("sun_direction", Vector3(0, 0, -1))
 
-		var illumination = clamp(phase_factor * moon_visibility, 0.0, 1.0)
+		var illumination = clamp(phase_factor * moon_visibility * day_dim, 0.0, 1.0)
 		secondary_moon_material.set_shader_parameter("phase_strength", illumination)
 
-		var ambient_term = clamp(0.08 + 0.35 * moon_visibility, 0.05, 0.6)
+		var ambient_term = clamp(0.08 + 0.35 * moon_visibility, 0.05, 0.6) * day_dim
 		secondary_moon_material.set_shader_parameter("ambient_term", ambient_term)
 
 func calculate_altitude(position: Vector3) -> float:

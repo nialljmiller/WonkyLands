@@ -103,10 +103,6 @@ const PlaneSpec = preload("res://plane/PlaneSpec.gd")
 @export_category("Misc")
 @export var exit_offset: Vector3 = Vector3(-2.2, 0.5, -1.5)
 
-@export_category("Dev")
-## When true: automatically applies full throttle + pitch-up after 2 s, prints telemetry.
-@export var dev_auto_pilot: bool = false
-
 @export_category("Visual deflection")
 @export var max_elevator_deflection_deg: float = 25.0
 @export var max_rudder_deflection_deg: float = 25.0
@@ -162,10 +158,6 @@ var _mat_rubber: StandardMaterial3D
 var _mat_blade: StandardMaterial3D
 var _mat_glass: StandardMaterial3D
 
-# Dev telemetry pacing.
-var _tele_accum: float = 0.0
-var _dev_time: float = 0.0
-
 @onready var entry_area: Area3D = $EntryArea
 
 # =====================================================================
@@ -185,21 +177,12 @@ func _physics_process(delta: float) -> void:
 	_update_propeller(delta)
 	_update_control_surface_visuals()
 
-	var piloted: bool = controlling_player != null or dev_auto_pilot
-
 	if controlling_player != null:
 		_attach_player_to_seat()
 		_handle_flight_input(delta)
+		_apply_flight_physics(delta)
 		if Input.is_action_just_pressed("interact"):
 			exit_plane()
-
-	if dev_auto_pilot:
-		_apply_dev_autopilot(delta)
-
-	if piloted:
-		_apply_flight_physics(delta)
-		if dev_auto_pilot:
-			_log_telemetry(delta)
 	else:
 		_apply_idle_physics(delta)
 		if nearby_player != null and Input.is_action_just_pressed("interact"):
@@ -211,10 +194,6 @@ func _physics_process(delta: float) -> void:
 # INPUT
 # =====================================================================
 func _handle_flight_input(delta: float) -> void:
-	# Dev shortcut: P toggles autopilot while piloted (useful for in-editor testing).
-	if InputMap.has_action("dev_autopilot") and Input.is_action_just_pressed("dev_autopilot"):
-		dev_auto_pilot = not dev_auto_pilot
-		_dev_time = 0.0
 	var t_in: float = Input.get_action_strength("plane_throttle_up") - Input.get_action_strength("plane_throttle_down")
 	throttle = clamp(throttle + t_in * throttle_response * delta, 0.0, 1.0)
 	# S = pitch_up = nose up → input_pitch positive.
@@ -226,32 +205,6 @@ func _handle_flight_input(delta: float) -> void:
 	input_brake = clamp(Input.get_action_strength("plane_brake"), 0.0, 1.0)
 	if Input.is_action_just_pressed("plane_flaps"):
 		_flap_target = 0.0 if _flap_target > 0.5 else 1.0
-
-func _apply_dev_autopilot(delta: float) -> void:
-	_dev_time += delta
-	throttle = 1.0
-	input_pitch = 0.0
-	input_roll = 0.0
-	# Small right rudder throughout to counter P-factor + torque reaction.
-	input_yaw = 0.15
-	# Scripted test profile (modelled after a real takeoff & handling check):
-	#   0–4 s: full throttle rollout, rudder-only
-	#   4–9 s: gentle back pressure to rotate + climb
-	#   9–12 s: ease stick to cruise climb
-	#   12–15 s: roll right
-	#   15–18 s: roll left
-	#   18+ s:  hands-off (just rudder) — look for stable trim
-	if _dev_time < 2.0:
-		pass
-	elif _dev_time < 6.0:
-		# Rotate as speed builds — strong back pressure to clear trees.
-		input_pitch = 1.0
-	elif _dev_time < 11.0:
-		input_pitch = 0.3   # hold climb attitude
-	elif _dev_time < 14.0:
-		input_roll = 1.0    # bank right
-	elif _dev_time < 17.0:
-		input_roll = -1.0   # bank left
 
 func _update_flaps(delta: float) -> void:
 	flap_deployed = move_toward(flap_deployed, _flap_target, flap_deploy_speed * delta)
@@ -520,24 +473,6 @@ func _apply_idle_physics(delta: float) -> void:
 		rotation.x = lerp_angle(e.x, 0.0, delta * 4.0)
 		rotation.z = lerp_angle(e.z, 0.0, delta * 4.0)
 
-# =====================================================================
-# TELEMETRY
-# =====================================================================
-func _log_telemetry(delta: float) -> void:
-	_tele_accum += delta
-	if _tele_accum < 1.0:
-		return
-	_tele_accum = 0.0
-	var e: Vector3 = global_transform.basis.get_euler(EULER_ORDER_YXZ)
-	var pitch_deg: float = rad_to_deg(e.x)
-	var roll_deg: float = rad_to_deg(e.z)
-	var yaw_deg: float = rad_to_deg(e.y)
-	var p: Vector3 = global_position
-	print("[plane] t=%.1fs pos=(%.1f,%.1f,%.1f) vel=(%.1f,%.1f,%.1f) spd=%.1f  pitch=%.1f° roll=%.1f° yaw=%.1f°  ωloc=(%.2f,%.2f,%.2f) thr=%.2f on_floor=%s"
-		% [_dev_time, p.x, p.y, p.z, velocity.x, velocity.y, velocity.z, velocity.length(),
-			pitch_deg, roll_deg, yaw_deg,
-			angular_velocity_local.x, angular_velocity_local.y, angular_velocity_local.z,
-			throttle, str(is_on_floor())])
 
 # =====================================================================
 # VISUAL UPDATES
