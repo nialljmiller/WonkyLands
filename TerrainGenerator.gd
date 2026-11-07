@@ -173,6 +173,10 @@ func add_plane_to_scene():
 		base_origin.y = (ground + 1.5) if ground != null else max(water_level + 2.0, 5.0)
 		spawn_origin = base_origin
 
+	# TEMP: dev autopilot for headless flight-test.
+	if OS.has_environment("WONKY_PLANE_AUTOPILOT"):
+		plane.dev_auto_pilot = true
+		print("[spawn] plane autopilot enabled, position=", spawn_origin)
 	plane.global_transform = Transform3D(Basis.IDENTITY, spawn_origin)
 	add_child(plane)
 

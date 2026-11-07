@@ -247,7 +247,7 @@ static func make_starter_cessna() -> Variant:
 	# needs 90 m ground run; our shorter effective runway + the drag
 	# of a chunky bush-plane model wants more punch here.
 	var eng = PlaneEngine.new()
-	eng.max_thrust = 5500.0
+	eng.max_thrust = 9000.0
 	eng.throttle_response = 1.8
 	eng.position = Vector3(0, 0.1, -2.9)
 	eng.p_factor_gain = 350.0

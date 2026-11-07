@@ -1,50 +1,111 @@
 extends CharacterBody3D
 class_name PlaneController
-## Blade-element flight model driven by a PlaneSpec resource.
+## Lumped-force 6DOF flight model for a starter GA bush plane.
 ##
-## Each physics tick:
-##   1. Read inputs → update throttle + per-wing control_input.
-##   2. Compute total aero force/torque by iterating every wing and
-##      accumulating each strip's local lift + drag.
-##   3. Add engine thrust, P-factor yaw moment, torque reaction roll
-##      moment, fuselage parasitic drag, and gravity.
-##   4. Linear: a = F / m. Angular: α = I⁻¹ · τ (diagonal tensor).
-##   5. Integrate; apply to CharacterBody3D.
+## Replaces the earlier blade-element implementation. Design goals:
+##   * Correctness first: a single whole-plane AoA / sideslip, scalar
+##     Cl/Cd/Cy polars, explicit damping. No per-strip sign puzzles.
+##   * Unified ground/air loop: ground reaction is a force, not a mode.
+##   * Direct control-authority mapping: elevator/rudder/aileron each
+##     produce a torque scaled by dynamic pressure (with propwash), so
+##     controls work from the moment the prop starts moving air.
+##   * Keep PlaneSpec as a loose config bag so we can still customize
+##     later, but we don't rely on a tower of per-wing math.
 ##
-## No scalar `angular_damping` constant and no hard max-angular-speed
-## clamp — rotational damping emerges from the blade-element math (a
-## rolling wing sees different AoA on each side).
+## Body-frame convention (matches Godot CharacterBody3D defaults):
+##   +X = right wing, +Y = up, +Z = aft, -Z = forward (nose).
+##   angular_velocity_local = (pitch_rate, yaw_rate, roll_rate) where
+##     pitch_rate > 0  ⇒ nose up
+##     yaw_rate   > 0  ⇒ nose left (right-hand rule about +Y)
+##     roll_rate  > 0  ⇒ right wing down
+##
+## Input convention (flight-sim):
+##   S (plane_pitch_up)   → input_pitch > 0 → nose up
+##   W (plane_pitch_down) → input_pitch < 0 → nose down
+##   A (plane_roll_left)  → input_roll < 0  → left wing down
+##   D (plane_roll_right) → input_roll > 0  → right wing down
+##   Q (plane_yaw_left)   → input_yaw  < 0  → nose left
+##   E (plane_yaw_right)  → input_yaw  > 0  → nose right
 
 const PlaneSpec = preload("res://plane/PlaneSpec.gd")
 
 # =====================================================================
-# TUNABLES (coarse — fine tuning lives in the PlaneSpec)
+# TUNABLES
 # =====================================================================
 @export_category("Engine")
-@export var throttle_response: float = 1.8
+@export var throttle_response: float = 1.5
 
 @export_category("Atmosphere")
 @export var air_density_sea_level: float = 1.225
 
+@export_category("Aero coefficients (lumped whole-plane)")
+# Lift curve.  Cl = cl_alpha * (α − α0) up to stall, then fades to flat-plate.
+@export var cl_alpha: float = 5.5              # per radian
+@export var cl_max: float = 1.45
+@export var alpha_zero_lift_deg: float = -3.0  # negative → wing lifts at α = 0
+@export var alpha_stall_deg: float = 15.0
+@export var stall_fade_deg: float = 5.0
+# Drag.  Parasitic + induced (k * Cl²).
+@export var cd_min: float = 0.032
+@export var k_induced: float = 0.055
+# Sideslip.  β produces a side force (weathervane) and a small roll
+# coupling through dihedral.
+@export var cy_beta: float = 0.9               # per radian of sideslip
+@export var dihedral_roll_coeff: float = 0.8   # roll torque from β
+
+@export_category("Reference areas")
+@export var wing_area: float = 16.0
+@export var h_tail_area: float = 2.0
+@export var v_tail_area: float = 1.5
+
+@export_category("Control authority (torque per rad per unit q)")
+# Each control surface produces τ = coeff * q * input, where q = ½ρv² (+propwash).
+@export var elevator_authority: float = 0.9
+@export var aileron_authority: float = 1.0
+@export var rudder_authority: float = 0.8
+
+@export_category("Stability (restoring + damping)")
+# Pitch stability: a positive AoA offset generates a nose-down pitching moment
+# so the plane trims at some small positive α (static stability / tailplane trim).
+@export var pitch_stiffness: float = 1.8       # per rad of (α − α_trim), scaled by q
+@export var alpha_trim_deg: float = 3.0
+# Per-axis angular damping torque = −k * ω * q  (q-scaled so damping grows with speed).
+@export var pitch_damping: float = 6.0
+@export var yaw_damping: float = 3.0
+@export var roll_damping: float = 4.0
+# Extra viscous damping (unscaled) that works even at zero airspeed.
+@export var pitch_viscous: float = 0.6
+@export var yaw_viscous: float = 0.4
+@export var roll_viscous: float = 1.0
+
+@export_category("Engine extras")
+@export var p_factor_gain: float = 180.0       # N·m yaw moment per rad of α at full throttle
+@export var torque_reaction_gain: float = 90.0 # N·m roll moment at full throttle
+@export var propwash_q_at_full: float = 220.0  # Pa dynamic-pressure boost over tail at full throttle
+
 @export_category("Ground effect")
 @export var ground_effect_enabled: bool = true
-@export var ground_effect_max_bonus: float = 0.3
-@export var ground_effect_height_frac: float = 0.5
+@export var ground_effect_max_bonus: float = 0.25
+@export var ground_effect_height_frac: float = 0.6
 
 @export_category("Flaps")
 @export var flap_deploy_speed: float = 0.8
+@export var flap_cl_bonus: float = 0.5
+@export var flap_cd_bonus: float = 0.03
 
 @export_category("Ground / taxi")
-@export var taxi_max_speed: float = 12.0
-@export var taxi_steer_gain: float = 1.8
-@export var brake_force: float = 9000.0
-@export var ground_lateral_damp: float = 6.0
-@export var ground_long_damp: float = 1.2
-@export var takeoff_speed: float = 32.0
+@export var takeoff_speed_ref: float = 28.0    # for propwash fade
+@export var wheel_rolling_resistance: float = 0.03   # fraction of weight resisting forward motion
+@export var wheel_lateral_grip: float = 9.0          # how firmly tyres resist side-slip (1/s damping)
+@export var brake_force: float = 15000.0
+@export var ground_leveling_torque: float = 60.0     # tyres damp roll/pitch while on floor
 
 @export_category("Misc")
-@export var idle_gravity_force: float = 18.0
 @export var exit_offset: Vector3 = Vector3(-2.2, 0.5, -1.5)
+
+@export_category("Dev")
+## When true: automatically applies full throttle + pitch-up after 2 s, prints telemetry.
+@export var dev_auto_pilot: bool = false
 
 @export_category("Visual deflection")
 @export var max_elevator_deflection_deg: float = 25.0
@@ -60,6 +121,7 @@ var spec: Variant = null
 var throttle: float = 0.0
 var current_speed: float = 0.0
 
+# Signs follow the input convention in the header above.
 var input_pitch: float = 0.0
 var input_yaw: float = 0.0
 var input_roll: float = 0.0
@@ -68,7 +130,7 @@ var input_brake: float = 0.0
 var flap_deployed: float = 0.0
 var _flap_target: float = 0.0
 
-# Plane-local angular velocity in rad/s, components (pitch, yaw, roll).
+# Plane-local angular velocity in rad/s, components (pitch_rate, yaw_rate, roll_rate).
 var angular_velocity_local: Vector3 = Vector3.ZERO
 
 var controlling_player: CharacterBody3D = null
@@ -100,6 +162,10 @@ var _mat_rubber: StandardMaterial3D
 var _mat_blade: StandardMaterial3D
 var _mat_glass: StandardMaterial3D
 
+# Dev telemetry pacing.
+var _tele_accum: float = 0.0
+var _dev_time: float = 0.0
+
 @onready var entry_area: Area3D = $EntryArea
 
 # =====================================================================
@@ -119,83 +185,126 @@ func _physics_process(delta: float) -> void:
 	_update_propeller(delta)
 	_update_control_surface_visuals()
 
+	var piloted: bool = controlling_player != null or dev_auto_pilot
+
 	if controlling_player != null:
 		_attach_player_to_seat()
 		_handle_flight_input(delta)
-		_apply_flight_physics(delta)
 		if Input.is_action_just_pressed("interact"):
 			exit_plane()
+
+	if dev_auto_pilot:
+		_apply_dev_autopilot(delta)
+
+	if piloted:
+		_apply_flight_physics(delta)
+		if dev_auto_pilot:
+			_log_telemetry(delta)
 	else:
 		_apply_idle_physics(delta)
 		if nearby_player != null and Input.is_action_just_pressed("interact"):
 			enter_plane(nearby_player)
+
 	move_and_slide()
 
 # =====================================================================
 # INPUT
 # =====================================================================
 func _handle_flight_input(delta: float) -> void:
+	# Dev shortcut: P toggles autopilot while piloted (useful for in-editor testing).
+	if InputMap.has_action("dev_autopilot") and Input.is_action_just_pressed("dev_autopilot"):
+		dev_auto_pilot = not dev_auto_pilot
+		_dev_time = 0.0
 	var t_in: float = Input.get_action_strength("plane_throttle_up") - Input.get_action_strength("plane_throttle_down")
 	throttle = clamp(throttle + t_in * throttle_response * delta, 0.0, 1.0)
-	input_pitch = Input.get_action_strength("plane_pitch_down") - Input.get_action_strength("plane_pitch_up")
-	input_yaw   = Input.get_action_strength("plane_yaw_right") - Input.get_action_strength("plane_yaw_left")
+	# S = pitch_up = nose up → input_pitch positive.
+	input_pitch = Input.get_action_strength("plane_pitch_up") - Input.get_action_strength("plane_pitch_down")
+	# D = roll_right = right wing down → input_roll positive.
 	input_roll  = Input.get_action_strength("plane_roll_right") - Input.get_action_strength("plane_roll_left")
+	# E = yaw_right = nose right → input_yaw positive.
+	input_yaw   = Input.get_action_strength("plane_yaw_right") - Input.get_action_strength("plane_yaw_left")
 	input_brake = clamp(Input.get_action_strength("plane_brake"), 0.0, 1.0)
 	if Input.is_action_just_pressed("plane_flaps"):
 		_flap_target = 0.0 if _flap_target > 0.5 else 1.0
 
+func _apply_dev_autopilot(delta: float) -> void:
+	_dev_time += delta
+	throttle = 1.0
+	input_pitch = 0.0
+	input_roll = 0.0
+	# Small right rudder throughout to counter P-factor + torque reaction.
+	input_yaw = 0.15
+	# Scripted test profile (modelled after a real takeoff & handling check):
+	#   0–4 s: full throttle rollout, rudder-only
+	#   4–9 s: gentle back pressure to rotate + climb
+	#   9–12 s: ease stick to cruise climb
+	#   12–15 s: roll right
+	#   15–18 s: roll left
+	#   18+ s:  hands-off (just rudder) — look for stable trim
+	if _dev_time < 2.0:
+		pass
+	elif _dev_time < 6.0:
+		# Rotate as speed builds — strong back pressure to clear trees.
+		input_pitch = 1.0
+	elif _dev_time < 11.0:
+		input_pitch = 0.3   # hold climb attitude
+	elif _dev_time < 14.0:
+		input_roll = 1.0    # bank right
+	elif _dev_time < 17.0:
+		input_roll = -1.0   # bank left
+
 func _update_flaps(delta: float) -> void:
 	flap_deployed = move_toward(flap_deployed, _flap_target, flap_deploy_speed * delta)
 
-func _push_control_inputs_to_spec() -> void:
-	# Map our input_* to each wing's control_input, respecting the
-	# sign already baked into the wing's surface_sign.
-	for wing in spec.wings:
-		match wing.surface_input:
-			"pitch":
-				wing.control_input = input_pitch
-			"roll":
-				wing.control_input = input_roll
-			"yaw":
-				wing.control_input = input_yaw
-			"flaps":
-				wing.control_input = flap_deployed
-			_:
-				wing.control_input = 0.0
-
 # =====================================================================
-# FLIGHT PHYSICS (blade-element)
+# FLIGHT PHYSICS — lumped-force 6DOF
 # =====================================================================
 func _apply_flight_physics(delta: float) -> void:
-	_push_control_inputs_to_spec()
-
 	var basis: Basis = global_transform.basis
-	var fwd: Vector3 = -basis.z
-
-	# Plane-local velocity: everything downstream is cleaner in body frame.
 	var v_world: Vector3 = velocity
 	var v_local: Vector3 = basis.inverse() * v_world
 	var speed: float = v_local.length()
 	current_speed = speed
 
-	# Density altitude: exponential falloff
+	# ---------- Atmospheric density ----------
 	var altitude: float = max(global_position.y, 0.0)
-	var air_density: float = air_density_sea_level * exp(-altitude / spec.engine.density_scale_height)
+	var density_scale_h: float = 8500.0
+	var air_density: float = air_density_sea_level * exp(-altitude / density_scale_h)
 
-	# ---------- Taxi mode on ground at low speed ----------
-	if is_on_floor() and speed < taxi_max_speed * 1.3:
-		_apply_taxi_physics(delta, v_local, fwd, basis, air_density)
-		return
-
-	# ---------- Air mode ----------
-	# AoA used for P-factor (lumped whole-plane AoA — the per-strip AoAs
-	# are computed independently inside each wing).
+	# ---------- Body-frame airflow ----------
+	# "Airspeed vector" in body frame — what the wing sees. v_local has
+	#   v_local.z < 0 when moving nose-forward, v_local.y < 0 when the
+	#   plane is moving horizontally while nose-up (air hits the belly).
+	# AoA = atan2(-v_local.y, -v_local.z): nose-up body attitude in
+	#   level flight ⇒ v_local.y negative ⇒ α positive. Correct physical
+	#   sign.
 	var aoa: float = 0.0
+	var beta: float = 0.0
 	if speed > 0.5:
-		aoa = atan2(v_local.y, -v_local.z)
+		var v_fwd: float = -v_local.z
+		aoa = atan2(-v_local.y, maxf(v_fwd, 0.1))
+		# β: positive when nose is yawed left of velocity (air hits right side).
+		# v_local.x > 0 means plane is moving to its own right ⇒ air comes from
+		# the plane's left ⇒ sideslip is to the left. Sign: β = atan2(v_local.x, v_fwd).
+		beta = atan2(v_local.x, maxf(v_fwd, 0.1))
 
-	# Ground effect — proximity to terrain. One number applied to every
-	# wing strip (approximating the whole plane as being at CG altitude).
+	# ---------- Dynamic pressure ----------
+	var q: float = 0.5 * air_density * speed * speed
+
+	# Propwash adds q only over tail surfaces. Fade as airspeed rises.
+	var propwash_fade: float = clamp(1.0 - speed / (takeoff_speed_ref * 1.6), 0.0, 1.0)
+	var propwash_q: float = propwash_q_at_full * throttle * propwash_fade
+	var q_tail: float = q + propwash_q
+
+	# Ground contact — used throughout to gate ground-only physics.
+	var body_up: Vector3 = basis.y
+	var ground_contact: bool = is_on_floor()
+	if speed > 8.0:
+		floor_snap_length = 0.0
+	else:
+		floor_snap_length = 0.4
+
+	# ---------- Ground effect ----------
 	var ge_bonus: float = 0.0
 	if ground_effect_enabled and typeof(World) != TYPE_NIL:
 		var ground_h: float = World.get_terrain_height(global_position.x, global_position.z)
@@ -205,93 +314,192 @@ func _apply_flight_physics(delta: float) -> void:
 			var t: float = clamp(1.0 - h_agl / ge_range, 0.0, 1.0)
 			ge_bonus = ground_effect_max_bonus * t * t
 
-	# Propwash dynamic pressure added to tail-surface strips. We compute
-	# one number and the caller applies it only to strips in the prop's
-	# slipstream — approximated here as the horizontal and vertical
-	# stabilizers (the ones with names starting "HStab" or "VStab").
-	var propwash_q: float = spec.engine.propwash_q(throttle, speed, takeoff_speed)
+	# ---------- Lift / drag / sideforce coefficients ----------
+	var cl: float = _cl(aoa) + flap_cl_bonus * flap_deployed
+	cl *= 1.0 + ge_bonus
+	var cd: float = cd_min + k_induced * cl * cl + flap_cd_bonus * flap_deployed
+	var cy: float = -cy_beta * beta   # positive β → force toward −X (restoring)
 
-	var total_force_local: Vector3 = Vector3.ZERO
-	var total_torque_local: Vector3 = Vector3.ZERO
+	# ---------- Aerodynamic forces in body frame ----------
+	# Lift acts along +Y (body up) at positive α.  More precisely it is
+	# perpendicular to the free-stream in the x-z plane, but for a GA-
+	# scale lumped model aligning it with body-up is accurate within a
+	# few percent at the AoAs we care about and keeps signs trivial.
+	var force_body: Vector3 = Vector3.ZERO
+	force_body.y += cl * q * wing_area
+	force_body.x += cy * q * v_tail_area
+	# Drag opposes the velocity vector in body frame.
+	if speed > 0.1:
+		force_body += -(v_local / speed) * cd * q * wing_area
 
-	for wing in spec.wings:
-		var is_tail: bool = wing.name.begins_with("HStab") or wing.name.begins_with("VStab")
-		var wing_propwash_q: float = propwash_q if is_tail else 0.0
-		var r: Dictionary = wing.accumulate_forces(
-			v_local,
-			angular_velocity_local,
-			air_density,
-			ge_bonus,
-			wing_propwash_q,
-		)
-		total_force_local += r.force
-		total_torque_local += r.torque
+	# ---------- Engine thrust ----------
+	var thrust_mag: float = spec.engine.max_thrust * throttle * (air_density / air_density_sea_level)
+	force_body.z += -thrust_mag   # forward is -Z
 
-	# Fuselage parasitic drag — simple square-law along the velocity vector.
-	var fuselage_drag_mag: float = 0.5 * air_density * speed * speed * spec.fuselage_frontal_area * spec.fuselage_drag_coefficient
-	if speed > 1e-3:
-		total_force_local += -(v_local / speed) * fuselage_drag_mag
+	# ---------- Control torques ----------
+	# Elevator: input_pitch > 0 (S) ⇒ pull up ⇒ +pitch torque about +X.
+	# Aileron:  input_roll  > 0 (D) ⇒ right wing down ⇒ +roll torque about +Z.
+	# Rudder:   input_yaw   > 0 (E) ⇒ nose right ⇒ −yaw torque about +Y.
+	var tau_pitch: float = elevator_authority * q_tail * input_pitch * h_tail_area
+	var tau_roll: float  = aileron_authority * q * input_roll * wing_area * 0.5
+	var tau_yaw: float   = -rudder_authority * q_tail * input_yaw * v_tail_area
 
-	# Engine thrust
-	total_force_local += spec.engine.thrust_force(throttle, altitude, air_density_sea_level)
-	total_torque_local += spec.engine.thrust_torque(throttle, aoa)
+	# ---------- Stability torques ----------
+	# Longitudinal static stability + horizontal-tail trim: trim at a small
+	# positive α so hands-off, the plane settles into gentle climb or level.
+	# We clamp the effective (α − α_trim) so a stall doesn't produce
+	# enormous nose-down moments that overpower elevator authority.
+	var a_trim: float = deg_to_rad(alpha_trim_deg)
+	var a_err: float = clampf(aoa - a_trim, deg_to_rad(-12.0), deg_to_rad(12.0))
+	tau_pitch += -pitch_stiffness * a_err * q * h_tail_area
 
-	# Convert force to world frame and add gravity.
-	var force_world: Vector3 = basis * total_force_local
+	# Weathervaning: sideslip produces a yaw torque that aligns the nose
+	# with the free-stream.
+	var b_err: float = clampf(beta, deg_to_rad(-15.0), deg_to_rad(15.0))
+	tau_yaw += -cy_beta * b_err * q * v_tail_area * 1.2
+
+	# Dihedral: sideslip produces a roll torque that rolls away from the slip.
+	tau_roll += -dihedral_roll_coeff * b_err * q * wing_area * 0.25
+
+	# ---------- Angular damping ----------
+	# Scales with q (aero damping) + a small viscous term for low speed.
+	tau_pitch += -(pitch_damping * q + pitch_viscous) * angular_velocity_local.x * h_tail_area
+	tau_yaw   += -(yaw_damping   * q + yaw_viscous)   * angular_velocity_local.y * v_tail_area
+	tau_roll  += -(roll_damping  * q + roll_viscous)  * angular_velocity_local.z * wing_area * 0.5
+
+	# ---------- Engine secondary effects ----------
+	# P-factor: at high power + high AoA the prop yaws the nose left.
+	# (positive ω_y = nose left in body frame, so +gain * α * throttle.)
+	tau_yaw  += p_factor_gain * throttle * aoa
+	# Torque reaction: prop rotation rolls the airframe LEFT (left wing
+	# down in level flight) — only when airborne; on the ground the gear
+	# transfers the reaction torque to the earth.
+	if not ground_contact:
+		tau_roll += -torque_reaction_gain * throttle
+
+	# ---------- Ground reaction ----------
+	# Unified model: apply tyre forces whenever we're touching the ground.
+	if ground_contact:
+		# Rolling resistance along forward axis.
+		var rolling_mu: float = wheel_rolling_resistance
+		if input_brake > 0.0:
+			# Strong longitudinal damping when braking.
+			force_body.z += -v_local.z * spec.mass * 2.0 * input_brake
+			rolling_mu += 0.15 * input_brake
+		# Rolling resistance = μ * weight, opposing forward motion.
+		var fwd_v: float = -v_local.z
+		if absf(fwd_v) > 0.05:
+			force_body.z += signf(fwd_v) * rolling_mu * spec.mass * 9.81
+
+		# Lateral tyre grip: kill sideways motion (no skating on the runway).
+		force_body.x += -v_local.x * spec.mass * wheel_lateral_grip
+
+		# Keep the plane roughly level on the ground using basis vectors
+		# (robust past the Euler gimbal lock).  Measures: how much the right-
+		# wing axis tilts out of the horizontal plane, and how much the
+		# forward axis tilts out of the horizontal plane.
+		#
+		# For pitch, we clamp to a shallow range on the ground: elevator can
+		# raise the nose a few degrees (tail-down → rotation attitude) but
+		# the gear prevents pitching past ~8°.  Past rotation speed the
+		# plane leaves the ground and this constraint goes away.
+		var body_right: Vector3 = basis.x
+		var body_fwd: Vector3 = -basis.z
+		var roll_err: float = body_right.y
+		var nose_up: float = body_fwd.y         # +1 = straight up, 0 = level
+		var max_ground_nose_up: float = 0.14    # sin(8°)
+		var pitch_err: float = 0.0
+		if nose_up > max_ground_nose_up:
+			pitch_err = nose_up - max_ground_nose_up
+		elif nose_up < -0.05:
+			pitch_err = nose_up + 0.05
+		tau_roll  += -roll_err * ground_leveling_torque * 14.0
+		tau_pitch += -pitch_err * ground_leveling_torque * 10.0
+		# Also strongly damp pitch rate so we never oscillate.
+		tau_pitch += -angular_velocity_local.x * 180.0
+
+	# ---------- Gravity (world frame) ----------
+	var force_world: Vector3 = basis * force_body
 	force_world += Vector3.DOWN * 9.81 * spec.mass
 
-	# Linear integration
-	var lin_accel: Vector3 = force_world / spec.mass
-	velocity += lin_accel * delta
+	# ---------- Linear integration ----------
+	velocity += (force_world / spec.mass) * delta
 
-	# Angular integration (plane-local)
+	# ---------- Angular integration ----------
+	# inertia = (I_xx pitch, I_yy yaw, I_zz roll)
 	var ang_accel: Vector3 = Vector3(
-		total_torque_local.x / spec.inertia.x,
-		total_torque_local.y / spec.inertia.y,
-		total_torque_local.z / spec.inertia.z,
+		tau_pitch / spec.inertia.x,
+		tau_yaw   / spec.inertia.y,
+		tau_roll  / spec.inertia.z,
 	)
 	angular_velocity_local += ang_accel * delta
 
-	# Apply rotation in body frame. All three axes use the +axis vector
-	# (RIGHT = +X, Y-axis = +Y, BACK = +Z) so standard-physics torques
-	# from r × F integrate directly into the right rotation direction.
-	# Using FORWARD (-Z) for roll inverts the sign relative to physics.
-	rotate_object_local(Vector3.RIGHT, angular_velocity_local.x * delta)   # pitch
-	rotate_y(                          angular_velocity_local.y * delta)   # yaw
-	rotate_object_local(Vector3.BACK,  angular_velocity_local.z * delta)   # roll
+	# Clamp rates.  On the ground, pitch rate is strongly limited so the
+	# gear can't be levered out of alignment.  In the air, allow spirited
+	# maneuvering but prevent numerical runaway.
+	if ground_contact:
+		angular_velocity_local.x = clampf(angular_velocity_local.x, -0.4, 0.4)
+		angular_velocity_local.z = clampf(angular_velocity_local.z, -0.6, 0.6)
+	else:
+		angular_velocity_local.x = clampf(angular_velocity_local.x, -2.5, 2.5)
+		angular_velocity_local.z = clampf(angular_velocity_local.z, -4.0, 4.0)
+	angular_velocity_local.y = clampf(angular_velocity_local.y, -2.0, 2.0)
 
-func _apply_taxi_physics(
-	delta: float,
-	v_local: Vector3,
-	fwd: Vector3,
-	basis: Basis,
-	air_density: float,
-) -> void:
-	# At taxi speeds the blade-element forces are tiny and jittery; use a
-	# simple ground model instead.
-	var v_long: float = velocity.dot(fwd)
-	var right_vec: Vector3 = basis.x
-	var v_side: float = velocity.dot(right_vec)
+	# ---------- Apply rotation in body frame ----------
+	# RIGHT = +X: positive ω_x rotates nose up (pitch-up) ✓
+	# UP    = +Y: positive ω_y rotates nose left ✓
+	# BACK  = +Z: positive ω_z rotates right wing down (roll-right) ✓
+	rotate_object_local(Vector3.RIGHT, angular_velocity_local.x * delta)
+	rotate_object_local(Vector3.UP,    angular_velocity_local.y * delta)
+	rotate_object_local(Vector3.BACK,  angular_velocity_local.z * delta)
 
-	var density_scale: float = exp(-max(global_position.y, 0.0) / spec.engine.density_scale_height)
-	var F_engine: Vector3 = fwd * (spec.engine.max_thrust * throttle * density_scale)
-	var brake_limit: float = brake_force * input_brake
-	var F_brake_mag: float = min(abs(v_long) * spec.mass * ground_long_damp, brake_limit)
-	var F_brake: Vector3 = Vector3.ZERO
-	if F_brake_mag > 0.0:
-		F_brake = -sign(v_long) * F_brake_mag * fwd
-	var F_lat: Vector3 = -v_side * spec.mass * ground_lateral_damp * right_vec
+	# ---------- Ground attitude constraint (hard) ----------
+	# While the wheels are on the ground, physically prevent the gear from
+	# being levered up past a shallow pitch/roll.  Soft torques alone can't
+	# win against full elevator at high q, and the alternative is the
+	# runaway tumble we see without this.
+	if ground_contact:
+		var MAX_GROUND_PITCH_DEG: float = 12.0
+		var MAX_GROUND_ROLL_DEG: float  = 3.0
+		var b: Basis = global_transform.basis
+		var fwd: Vector3 = -b.z
+		var right_v: Vector3 = b.x
+		var nose_up_sin: float = fwd.y
+		var max_sin: float = sin(deg_to_rad(MAX_GROUND_PITCH_DEG))
+		var min_sin: float = sin(deg_to_rad(-3.0))
+		if nose_up_sin > max_sin:
+			var excess: float = asin(clampf(nose_up_sin, -1.0, 1.0)) - deg_to_rad(MAX_GROUND_PITCH_DEG)
+			rotate_object_local(Vector3.RIGHT, -excess)
+			angular_velocity_local.x = min(angular_velocity_local.x, 0.0)
+		elif nose_up_sin < min_sin:
+			var deficit: float = asin(clampf(nose_up_sin, -1.0, 1.0)) - deg_to_rad(-3.0)
+			rotate_object_local(Vector3.RIGHT, -deficit)
+			angular_velocity_local.x = max(angular_velocity_local.x, 0.0)
+		# Roll clamp
+		var right_tilt: float = right_v.y    # +1 = right wing straight up
+		var max_roll_sin: float = sin(deg_to_rad(MAX_GROUND_ROLL_DEG))
+		if right_tilt > max_roll_sin:
+			var e_r: float = asin(clampf(right_tilt, -1.0, 1.0)) - deg_to_rad(MAX_GROUND_ROLL_DEG)
+			rotate_object_local(Vector3.BACK, -e_r)
+			angular_velocity_local.z = min(angular_velocity_local.z, 0.0)
+		elif right_tilt < -max_roll_sin:
+			var e_r2: float = asin(clampf(right_tilt, -1.0, 1.0)) + deg_to_rad(MAX_GROUND_ROLL_DEG)
+			rotate_object_local(Vector3.BACK, -e_r2)
+			angular_velocity_local.z = max(angular_velocity_local.z, 0.0)
 
-	var cap: float = taxi_max_speed + 4.0 * (1.0 - input_brake)
-	if velocity.length() > cap:
-		F_engine = Vector3.ZERO
-
-	var steer_cmd: float = clamp(input_yaw + 0.3 * input_roll, -1.0, 1.0)
-	rotate_y(steer_cmd * taxi_steer_gain * delta)
-
-	var F_total: Vector3 = F_engine + F_brake + F_lat + Vector3.DOWN * 9.81 * spec.mass
-	velocity += (F_total / spec.mass) * delta
-	angular_velocity_local = angular_velocity_local.lerp(Vector3.ZERO, 8.0 * delta)
+func _cl(aoa_rad: float) -> float:
+	var a_zero: float = deg_to_rad(alpha_zero_lift_deg)
+	var a_eff: float = aoa_rad - a_zero
+	var a_eff_deg: float = rad_to_deg(a_eff)
+	var abs_deg: float = absf(a_eff_deg)
+	var linear: float = clampf(cl_alpha * a_eff, -cl_max, cl_max)
+	if abs_deg <= alpha_stall_deg:
+		return linear
+	# Post-stall: fade to flat-plate ~sin(2α) * 0.6 * cl_max.
+	var flat_plate: float = sin(2.0 * a_eff) * cl_max * 0.6
+	var t: float = clampf((abs_deg - alpha_stall_deg) / stall_fade_deg, 0.0, 1.0)
+	t = smoothstep(0.0, 1.0, t)
+	return lerp(linear, flat_plate, t)
 
 # =====================================================================
 # IDLE (no pilot)
@@ -299,18 +507,37 @@ func _apply_taxi_physics(
 func _apply_idle_physics(delta: float) -> void:
 	throttle = lerp(throttle, 0.0, delta * 1.5)
 	current_speed = lerp(current_speed, 0.0, delta * 1.2)
-	angular_velocity_local = angular_velocity_local.lerp(Vector3.ZERO, delta * 2.0)
+	angular_velocity_local = angular_velocity_local.lerp(Vector3.ZERO, delta * 4.0)
 
-	var target := Vector3.ZERO
-	if not is_on_floor():
-		target.y = velocity.y - idle_gravity_force * delta
-	velocity = velocity.lerp(target, delta * 3.0)
-
+	# Simple gravity + ground.  No "lerp velocity to zero" — gravity does it.
+	velocity.y -= 9.81 * delta
+	# Light ground-level stabilization.
 	if is_on_floor():
-		var e: Vector3 = rotation_degrees
-		e.x = lerp_angle(e.x, 0.0, delta * 3.0)
-		e.z = lerp_angle(e.z, 0.0, delta * 3.0)
-		rotation_degrees = e
+		velocity.x = lerp(velocity.x, 0.0, delta * 6.0)
+		velocity.z = lerp(velocity.z, 0.0, delta * 6.0)
+		velocity.y = max(velocity.y, 0.0)
+		var e: Vector3 = rotation
+		rotation.x = lerp_angle(e.x, 0.0, delta * 4.0)
+		rotation.z = lerp_angle(e.z, 0.0, delta * 4.0)
+
+# =====================================================================
+# TELEMETRY
+# =====================================================================
+func _log_telemetry(delta: float) -> void:
+	_tele_accum += delta
+	if _tele_accum < 1.0:
+		return
+	_tele_accum = 0.0
+	var e: Vector3 = global_transform.basis.get_euler(EULER_ORDER_YXZ)
+	var pitch_deg: float = rad_to_deg(e.x)
+	var roll_deg: float = rad_to_deg(e.z)
+	var yaw_deg: float = rad_to_deg(e.y)
+	var p: Vector3 = global_position
+	print("[plane] t=%.1fs pos=(%.1f,%.1f,%.1f) vel=(%.1f,%.1f,%.1f) spd=%.1f  pitch=%.1f° roll=%.1f° yaw=%.1f°  ωloc=(%.2f,%.2f,%.2f) thr=%.2f on_floor=%s"
+		% [_dev_time, p.x, p.y, p.z, velocity.x, velocity.y, velocity.z, velocity.length(),
+			pitch_deg, roll_deg, yaw_deg,
+			angular_velocity_local.x, angular_velocity_local.y, angular_velocity_local.z,
+			throttle, str(is_on_floor())])
 
 # =====================================================================
 # VISUAL UPDATES
@@ -320,8 +547,10 @@ func _update_propeller(delta: float) -> void:
 		prop_hub.rotate_z(lerp(3.0, 40.0, throttle) * delta)
 
 func _update_control_surface_visuals() -> void:
+	# Elevator: input_pitch > 0 (pull up) → elevator trailing edge up → +rotation.x.
 	var el := deg_to_rad(max_elevator_deflection_deg) * input_pitch
-	var rd := deg_to_rad(max_rudder_deflection_deg) * input_yaw
+	# Rudder: input_yaw > 0 (nose right) → trailing edge left → rudder rotates about +Y with − sign.
+	var rd := -deg_to_rad(max_rudder_deflection_deg) * input_yaw
 	var ai := deg_to_rad(max_aileron_deflection_deg) * input_roll
 	var fl := deg_to_rad(max_flap_deflection_deg) * flap_deployed
 	if elevator != null:
@@ -329,20 +558,20 @@ func _update_control_surface_visuals() -> void:
 	if rudder != null:
 		rudder.rotation.y = rd
 	if left_aileron != null:
-		left_aileron.rotation.x = ai
+		left_aileron.rotation.x = -ai
 	if right_aileron != null:
-		right_aileron.rotation.x = -ai
+		right_aileron.rotation.x = ai
 	if left_flap != null:
 		left_flap.rotation.x = fl
 	if right_flap != null:
 		right_flap.rotation.x = fl
 
 func lerp_angle(from_angle: float, to_angle: float, weight: float) -> float:
-	var diff: float = wrapf(to_angle - from_angle, -180.0, 180.0)
-	return from_angle + diff * clamp(weight, 0.0, 1.0)
+	var diff: float = wrapf(to_angle - from_angle, -PI, PI)
+	return from_angle + diff * clampf(weight, 0.0, 1.0)
 
 # =====================================================================
-# SEAT / ENTER / EXIT (unchanged)
+# SEAT / ENTER / EXIT
 # =====================================================================
 func _attach_player_to_seat() -> void:
 	if controlling_player == null:
@@ -438,7 +667,7 @@ func _on_entry_body_exited(body: Node) -> void:
 		nearby_player = null
 
 # =====================================================================
-# VISUAL CONSTRUCTION — unchanged from Phase 8, dimensions pulled from spec
+# VISUAL CONSTRUCTION
 # =====================================================================
 func _init_materials() -> void:
 	_mat_fuselage = _make_mat(Color(0.92, 0.9, 0.85), 0.45, 0.1)
@@ -523,7 +752,6 @@ func _build_wings_from_spec() -> void:
 	var root_y: float = spec.main_wing_y
 	var wing_offset_z: float = spec.main_wing_z
 
-	# Main wing panels
 	var left_wing := _box(Vector3(half_span, thickness, chord), _mat_wing)
 	left_wing.position = Vector3(-half_span * 0.5, root_y, wing_offset_z)
 	left_wing.rotation_degrees.z = dihedral_deg
@@ -544,7 +772,6 @@ func _build_wings_from_spec() -> void:
 		strut.rotation_degrees.z = -side * 30.0
 		add_child(strut)
 
-	# Flaps + ailerons (visual only — the sim uses wing strips)
 	var trailing_edge_z: float = wing_offset_z + chord * 0.5
 	var ctrl_chord: float = 0.35
 	var ctrl_thickness: float = thickness * 0.9
