@@ -275,10 +275,16 @@ func create_secondary_moon():
 	add_child(secondary_moon_mesh)
 
 func create_moon_shader_material(base_color: Color) -> ShaderMaterial:
+	# All the lighting comes from EMISSION (unshaded) and we fade the
+	# ALPHA with brightness so the dark side of the moon becomes
+	# TRANSPARENT instead of rendering as a dark disc against the sky
+	# — the previous shader did `ALBEDO = color * brightness` and the
+	# shadow side came out dim-grey against bright blue, which the user
+	# saw as a "black diffuse spot" during daytime.
 	var shader = Shader.new()
 	shader.code = """
 shader_type spatial;
-render_mode unshaded, cull_disabled, depth_draw_always;
+render_mode unshaded, cull_disabled, depth_draw_opaque, blend_mix;
 
 uniform vec4 albedo_color : source_color = vec4(0.9, 0.9, 0.85, 1.0);
 uniform vec3 sun_direction = vec3(0.0, 0.0, -1.0);
@@ -286,15 +292,19 @@ uniform float phase_strength = 1.0;
 uniform float ambient_term = 0.1;
 uniform float glow_strength = 0.6;
 uniform float terminator_softness = 0.35;
+uniform float visibility = 1.0;   // 0 = invisible (bright day), 1 = fully visible (night)
 
 void fragment() {
 	vec3 normal_dir = normalize(NORMAL);
 	float lambert = max(dot(normal_dir, -sun_direction), 0.0);
 	lambert = smoothstep(0.0, terminator_softness, lambert);
 	float brightness = clamp(ambient_term + phase_strength * lambert, 0.0, 1.0);
-	ALBEDO = albedo_color.rgb * brightness;
-	EMISSION = albedo_color.rgb * (ambient_term * 0.5 + glow_strength * brightness);
-	ALPHA = albedo_color.a;
+
+	ALBEDO = vec3(0.0);
+	EMISSION = albedo_color.rgb * (ambient_term * 0.3 + glow_strength * brightness);
+	// Dark side → ALPHA near 0 → transparent. Lit side → ALPHA near 1.
+	// Multiplied by visibility so the whole mesh fades during day.
+	ALPHA = clamp(brightness * 2.5, 0.0, 1.0) * visibility;
 }
 """
 
@@ -521,13 +531,13 @@ func calculate_primary_moon_position():
 		else:
 			primary_moon_material.set_shader_parameter("sun_direction", Vector3(0, 0, -1))
 
-		var illumination = clamp(phase_factor * moon_visibility * day_dim, 0.0, 1.0)
+		var illumination = clamp(phase_factor * moon_visibility, 0.0, 1.0)
 		primary_moon_material.set_shader_parameter("phase_strength", illumination)
-
-		# Ambient also dimmed during day so the moon isn't visible as a
-		# glowing blob against bright sky.
-		var ambient_term = clamp(0.08 + 0.35 * moon_visibility, 0.05, 0.6) * day_dim
+		var ambient_term = clamp(0.08 + 0.35 * moon_visibility, 0.05, 0.6)
 		primary_moon_material.set_shader_parameter("ambient_term", ambient_term)
+		# Whole-moon visibility (day fade). Separate uniform so the
+		# shader can also use it for ALPHA, not just colour scaling.
+		primary_moon_material.set_shader_parameter("visibility", day_dim * moon_visibility)
 
 func calculate_secondary_moon_position():
 	# Calculate secondary moon position using Kepler's laws for elliptical orbit
@@ -583,11 +593,11 @@ func calculate_secondary_moon_position():
 		else:
 				secondary_moon_material.set_shader_parameter("sun_direction", Vector3(0, 0, -1))
 
-		var illumination = clamp(phase_factor * moon_visibility * day_dim, 0.0, 1.0)
+		var illumination = clamp(phase_factor * moon_visibility, 0.0, 1.0)
 		secondary_moon_material.set_shader_parameter("phase_strength", illumination)
-
-		var ambient_term = clamp(0.08 + 0.35 * moon_visibility, 0.05, 0.6) * day_dim
+		var ambient_term = clamp(0.08 + 0.35 * moon_visibility, 0.05, 0.6)
 		secondary_moon_material.set_shader_parameter("ambient_term", ambient_term)
+		secondary_moon_material.set_shader_parameter("visibility", day_dim * moon_visibility)
 
 func calculate_altitude(position: Vector3) -> float:
 	# Calculate altitude angle of a celestial object from the horizon

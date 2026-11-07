@@ -60,6 +60,12 @@ var tree_system = null
 var _pending_chunks: Dictionary = {}
 var _chunk_update_timer: float = 0.0
 
+# Terrain shader + per-biome materials are built once and shared across
+# all chunks. Creating a new Shader/ShaderMaterial per chunk was the
+# main source of per-frame hitches when chunks finalised.
+var _terrain_shader: Shader = null
+var _biome_materials: Dictionary = {}   # BiomeType enum int → ShaderMaterial
+
 # Biome types
 enum BiomeType {
 	TEMPERATE_FOREST,
@@ -414,21 +420,31 @@ func _build_chunk_on_worker(chunk_pos: Vector2, lod: int) -> void:
 		var acc: Vector3 = normals[n]
 		normals[n] = acc.normalized() if acc.length_squared() > 0.0 else Vector3.UP
 
-	# Collision is expensive and only needed for the close ring.
-	var faces := PackedVector3Array()
+	# ArrayMesh construction uses RenderingServer RIDs and is not safe on
+	# worker threads (hits "Attempting to initialize the wrong RID").
+	# We pass the raw arrays to the main thread and build ArrayMesh there.
+	# ConcavePolygonShape3D is pure CPU though — safe to build its BVH
+	# here.
+	var collision_shape: ConcavePolygonShape3D = null
 	if lod == 0:
+		var faces := PackedVector3Array()
 		faces.resize(indices.size())
 		for i in range(0, indices.size(), 3):
 			faces[i]     = vertices[indices[i]]
 			faces[i + 1] = vertices[indices[i + 1]]
 			faces[i + 2] = vertices[indices[i + 2]]
+		collision_shape = ConcavePolygonShape3D.new()
+		collision_shape.set_faces(faces)
 
 	call_deferred("_finalize_chunk", chunk_pos, lod, world_pos_x, world_pos_z, dominant_biome,
-		vertices, indices, normals, faces)
+		vertices, indices, normals, collision_shape)
 
 func _finalize_chunk(chunk_pos: Vector2, lod: int, world_pos_x: float, world_pos_z: float, biome: int,
-		vertices: PackedVector3Array, indices: PackedInt32Array,
-		normals: PackedVector3Array, faces: PackedVector3Array) -> void:
+		vertices: PackedVector3Array, indices: PackedInt32Array, normals: PackedVector3Array,
+		collision_shape: ConcavePolygonShape3D) -> void:
+	# Main-thread: build ArrayMesh (not safe on worker), attach cached
+	# shader material, create collision from the pre-built shape, and
+	# add to scene.
 	_pending_chunks.erase(chunk_pos)
 	if not _chunk_is_still_wanted(chunk_pos):
 		return
@@ -450,18 +466,15 @@ func _finalize_chunk(chunk_pos: Vector2, lod: int, world_pos_x: float, world_pos
 
 	var mesh_instance := MeshInstance3D.new()
 	mesh_instance.mesh = mesh
+	mesh_instance.material_override = _get_biome_material(biome)
 	chunk_node.add_child(mesh_instance)
 
-	if lod == 0 and faces.size() > 0:
+	if collision_shape != null:
 		var body := StaticBody3D.new()
 		var cs := CollisionShape3D.new()
-		var shape := ConcavePolygonShape3D.new()
-		shape.set_faces(faces)
-		cs.shape = shape
+		cs.shape = collision_shape
 		body.add_child(cs)
 		chunk_node.add_child(body)
-
-	apply_biome_texturing(mesh_instance, biome)
 
 	add_child(chunk_node)
 
@@ -604,67 +617,63 @@ func apply_biome_height_adjustments(base_height: float, biome_type: int, world_p
 	
 	return adjusted_height
 
-# Apply biome-based texturing to a mesh instance
+# Apply biome-based texturing — cheap cached path. The Shader resource
+# is compiled once, and one ShaderMaterial is built per biome and
+# reused across every chunk of that biome. Prior code allocated both
+# per-chunk, which was the main source of main-thread hitches during
+# chunk streaming.
 func apply_biome_texturing(mesh_instance: MeshInstance3D, biome_type: int):
-	# Create shader material for terrain
-	var terrain_material = ShaderMaterial.new()
+	mesh_instance.material_override = _get_biome_material(biome_type)
 
-	# Create shader
-	var shader = Shader.new()
-	
-	# Start with common shader code
-	var shader_code = """
-	shader_type spatial;
+func _get_biome_material(biome_type: int) -> ShaderMaterial:
+	if _biome_materials.has(biome_type):
+		return _biome_materials[biome_type]
+	if _terrain_shader == null:
+		_terrain_shader = Shader.new()
+		_terrain_shader.code = _TERRAIN_SHADER_CODE
+	var mat := ShaderMaterial.new()
+	mat.shader = _terrain_shader
+	_apply_biome_params(mat, biome_type)
+	_biome_materials[biome_type] = mat
+	return mat
 
-	uniform float low_threshold = -10.0;
-	uniform float mid_threshold = 0.0;
-	uniform float high_threshold = 20.0;
-	uniform float blend_range = 3.0;
+const _TERRAIN_SHADER_CODE: String = """
+shader_type spatial;
 
-	// Base colors (will be overridden by biome-specific colors)
-	uniform vec3 low_color;
-	uniform vec3 mid_color;
-	uniform vec3 high_color;
-	uniform vec3 top_color;
+uniform float low_threshold = -10.0;
+uniform float mid_threshold = 0.0;
+uniform float high_threshold = 20.0;
+uniform float blend_range = 3.0;
 
-	varying vec3 vertex_pos;
+uniform vec3 low_color;
+uniform vec3 mid_color;
+uniform vec3 high_color;
+uniform vec3 top_color;
 
-	void vertex() {
-		vertex_pos = VERTEX;
-	}
+varying vec3 vertex_pos;
 
-	void fragment() {
-		// Height-based coloring
-		float height = vertex_pos.y;
-		
-		// Calculate blend factors based on height
-		float low_factor = 1.0 - smoothstep(low_threshold, low_threshold + blend_range, height);
-		float mid_factor = smoothstep(low_threshold, low_threshold + blend_range, height) - 
-						smoothstep(mid_threshold + blend_range, high_threshold, height);
-		float high_factor = smoothstep(mid_threshold + blend_range, high_threshold, height) - 
-						smoothstep(high_threshold, high_threshold + blend_range, height);
-		float top_factor = smoothstep(high_threshold, high_threshold + blend_range, height);
-		
-		// Combine colors based on height
-		vec3 final_color = low_color * low_factor + 
-						mid_color * mid_factor + 
-						high_color * high_factor + 
-						top_color * top_factor;
-		
-		// Apply lighting
-		ALBEDO = final_color;
-		
-		// Add roughness variation based on elevation
-		ROUGHNESS = 0.9 - (top_factor * 0.8); // Higher areas smoother
-		
-		// Add metallic variation for certain biomes (set in biome config)
-	}
-	"""
-	
-	shader.code = shader_code
-	terrain_material.shader = shader
+void vertex() {
+	vertex_pos = VERTEX;
+}
 
-	# Set biome-specific shader parameters
+void fragment() {
+	float height = vertex_pos.y;
+	float low_factor = 1.0 - smoothstep(low_threshold, low_threshold + blend_range, height);
+	float mid_factor = smoothstep(low_threshold, low_threshold + blend_range, height)
+					 - smoothstep(mid_threshold + blend_range, high_threshold, height);
+	float high_factor = smoothstep(mid_threshold + blend_range, high_threshold, height)
+					  - smoothstep(high_threshold, high_threshold + blend_range, height);
+	float top_factor = smoothstep(high_threshold, high_threshold + blend_range, height);
+	vec3 final_color = low_color * low_factor
+					 + mid_color * mid_factor
+					 + high_color * high_factor
+					 + top_color * top_factor;
+	ALBEDO = final_color;
+	ROUGHNESS = 0.9 - (top_factor * 0.8);
+}
+"""
+
+func _apply_biome_params(terrain_material: ShaderMaterial, biome_type: int) -> void:
 	match biome_type:
 		BiomeType.TEMPERATE_FOREST:
 			# Temperate forest has water, grass, dirt, and stone
@@ -715,12 +724,7 @@ func apply_biome_texturing(mesh_instance: MeshInstance3D, biome_type: int):
 			terrain_material.set_shader_parameter("mid_color", Color(0.25, 0.2, 0.15))  # Volcanic soil
 			terrain_material.set_shader_parameter("high_color", Color(0.15, 0.15, 0.15))  # Basalt
 			terrain_material.set_shader_parameter("top_color", Color(0.7, 0.2, 0.1))  # Magma-tinged rock
-			
-	# Apply biome blend range
 	terrain_material.set_shader_parameter("blend_range", 3.0)
-
-	# Apply material to terrain mesh
-	mesh_instance.material_override = terrain_material
 
 func add_player_to_scene():
 	# Instance the declarative Player.tscn so controller, collision, mesh
