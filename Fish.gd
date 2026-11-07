@@ -36,6 +36,8 @@ var default_swim_speed: float = 0.0
 var water_system
 var nearby_fish: Array = []
 var lure_mesh: MeshInstance3D
+var tail_pivot: Node3D = null           # child node used for wiggle animation
+var _wiggle_phase: float = 0.0
 
 func _ready():
 	# Save initial spawn position as center of territory
@@ -121,6 +123,15 @@ func _physics_process(delta):
 	# Apply small vertical wobble for natural movement
 	velocity.y += sin(Time.get_ticks_msec() / 500.0) * 0.2
 
+	# Tail wiggle amplitude tracks swim speed so a fleeing fish flicks
+	# harder than one drifting around its territory.
+	if tail_pivot != null:
+		var speed_frac: float = clamp(velocity.length() / max(swim_speed * flee_swim_multiplier, 0.1), 0.0, 1.0)
+		var amp: float = deg_to_rad(10.0 + 25.0 * speed_frac)
+		var freq: float = 6.0 + 6.0 * speed_frac   # Hz-ish
+		_wiggle_phase += delta * freq * TAU
+		tail_pivot.rotation.y = sin(_wiggle_phase) * amp
+
 	# Apply water flow (ocean currents) — fish partially resist.
 	if typeof(World) != TYPE_NIL:
 		velocity += World.get_flow_direction() * World.get_flow_strength() * 0.3
@@ -137,49 +148,161 @@ func _physics_process(delta):
 
 func create_fish_mesh():
 	_remove_existing_mesh()
+	tail_pivot = null
 
-	# Create basic fish shape using primitives
-	var fish_body = MeshInstance3D.new()
-	fish_body.name = "FishBody"
+	# Fish-shape convention in this function:
+	#   -Z = nose (forward), +Z = tail. Body extents:
+	#   length along Z = fish_size.x, height along Y = fish_size.y,
+	#   width along X = fish_size.z. (This matches how the fish Node3D
+	#   rotates — its own -Z is forward.)
+	var length: float = fish_size.x
+	var height: float = fish_size.y
+	var width: float = fish_size.z
 
-	# Create fish body (flattened cube)
-	var body_mesh = PrismMesh.new()
-	body_mesh.size = fish_size
-	fish_body.mesh = body_mesh
+	var body_mat := _make_body_material()
+	var accent_mat := _make_accent_material(body_mat)
 
-	# Create material for fish
-	var fish_material = StandardMaterial3D.new()
-	fish_material.albedo_color = fish_color
-	match mesh_style:
-		MeshStyle.BASIC:
-			fish_material.metallic = 0.7
-			fish_material.roughness = 0.2
-		MeshStyle.STRIPED:
-			fish_material.metallic = 0.7
-			fish_material.roughness = 0.2
-		MeshStyle.DEEP_SEA:
-			fish_material.metallic = 0.5
-			fish_material.roughness = 0.3
-	fish_body.material_override = fish_material
+	var rig := Node3D.new()
+	rig.name = "FishRig"
 
-	_add_tail(fish_body, fish_material)
+	# ---- Body: unit sphere scaled into an ellipsoid ----
+	var body := MeshInstance3D.new()
+	body.name = "Body"
+	var sphere := SphereMesh.new()
+	sphere.radius = 0.5
+	sphere.height = 1.0
+	sphere.radial_segments = 10
+	sphere.rings = 6
+	body.mesh = sphere
+	body.scale = Vector3(width, height, length)
+	body.material_override = body_mat
+	rig.add_child(body)
 
+	# ---- Dorsal fin on top (flat triangular prism) ----
+	var dorsal := MeshInstance3D.new()
+	dorsal.name = "Dorsal"
+	var dorsal_mesh := PrismMesh.new()
+	dorsal_mesh.size = Vector3(width * 0.3, height * 0.7, length * 0.4)
+	dorsal.mesh = dorsal_mesh
+	dorsal.material_override = body_mat
+	dorsal.position = Vector3(0.0, height * 0.55, length * 0.05)
+	rig.add_child(dorsal)
+
+	# ---- Pectoral fins on sides (angled flat flaps) ----
+	for side in [-1.0, 1.0]:
+		var fin := MeshInstance3D.new()
+		fin.name = "PectoralFin"
+		var fin_mesh := PrismMesh.new()
+		fin_mesh.size = Vector3(length * 0.25, height * 0.05, width * 1.6)
+		fin.mesh = fin_mesh
+		fin.material_override = body_mat
+		fin.position = Vector3(side * width * 0.55, -height * 0.05, -length * 0.1)
+		fin.rotation_degrees = Vector3(0.0, 90.0 * side, -20.0 * side)
+		rig.add_child(fin)
+
+	# ---- Tail pivot + tail fin (pivot is animated by _physics_process) ----
+	tail_pivot = Node3D.new()
+	tail_pivot.name = "TailPivot"
+	tail_pivot.position = Vector3(0.0, 0.0, length * 0.5)
+	var tail_fin := MeshInstance3D.new()
+	tail_fin.name = "TailFin"
+	var tail_mesh := PrismMesh.new()
+	tail_mesh.size = Vector3(width * 0.1, height * 1.1, length * 0.5)
+	tail_fin.mesh = tail_mesh
+	tail_fin.material_override = body_mat
+	tail_fin.position = Vector3(0.0, 0.0, length * 0.25)
+	tail_pivot.add_child(tail_fin)
+	rig.add_child(tail_pivot)
+
+	# ---- Eyes: 2 small black-glossy spheres near the nose ----
+	var eye_mat := StandardMaterial3D.new()
+	eye_mat.albedo_color = Color(0.05, 0.05, 0.08)
+	eye_mat.metallic = 0.5
+	eye_mat.roughness = 0.2
+	for side in [-1.0, 1.0]:
+		var eye := MeshInstance3D.new()
+		eye.name = "Eye"
+		var eye_mesh := SphereMesh.new()
+		eye_mesh.radius = height * 0.18
+		eye_mesh.height = height * 0.36
+		eye_mesh.radial_segments = 6
+		eye_mesh.rings = 3
+		eye.mesh = eye_mesh
+		eye.material_override = eye_mat
+		eye.position = Vector3(side * width * 0.42, height * 0.15, -length * 0.35)
+		rig.add_child(eye)
+
+	# ---- Style-specific extras ----
 	if mesh_style == MeshStyle.STRIPED:
-		var stripe_material = StandardMaterial3D.new()
-		stripe_material.albedo_color = stripe_color
-		stripe_material.metallic = fish_material.metallic
-		stripe_material.roughness = fish_material.roughness
 		for offset in stripe_offsets:
-			_add_stripe(fish_body, offset, stripe_material)
+			_add_stripe_v2(rig, offset, accent_mat, length, height, width)
 
 	if lure_enabled:
-		_create_lure(fish_body)
+		_create_lure_v2(rig, length, height, accent_mat)
 	else:
 		lure_mesh = null
 
-	# Add to main node (with rotation to face forward direction)
-	fish_body.rotation_degrees.y = 90
-	add_child(fish_body)
+	add_child(rig)
+
+
+# ---------------------------------------------------------------------
+# Materials — small helpers to keep create_fish_mesh readable.
+# ---------------------------------------------------------------------
+func _make_body_material() -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = fish_color
+	match mesh_style:
+		MeshStyle.BASIC:
+			mat.metallic = 0.6
+			mat.roughness = 0.25
+		MeshStyle.STRIPED:
+			mat.metallic = 0.5
+			mat.roughness = 0.3
+		MeshStyle.DEEP_SEA:
+			mat.metallic = 0.4
+			mat.roughness = 0.5
+	return mat
+
+func _make_accent_material(base: StandardMaterial3D) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = stripe_color
+	mat.metallic = base.metallic
+	mat.roughness = base.roughness
+	return mat
+
+# A visible band wrapped around the body along Z.
+func _add_stripe_v2(parent: Node3D, position_z: float, material: StandardMaterial3D,
+		length: float, height: float, width: float) -> void:
+	var stripe := MeshInstance3D.new()
+	stripe.name = "Stripe"
+	var stripe_mesh := BoxMesh.new()
+	stripe_mesh.size = Vector3(width * 1.02, height * 1.02, length * stripe_thickness)
+	stripe.mesh = stripe_mesh
+	stripe.material_override = material
+	# position_z is from the old API in body-local Y units; we reinterpret
+	# it as a fraction of length along Z so existing variants stay visual
+	# without needing retuning.
+	stripe.position = Vector3(0.0, 0.0, position_z * length * 2.0)
+	parent.add_child(stripe)
+
+# Deep-sea fish lure: emissive ball dangling in front of the nose.
+func _create_lure_v2(parent: Node3D, length: float, height: float, _accent: StandardMaterial3D) -> void:
+	lure_mesh = MeshInstance3D.new()
+	lure_mesh.name = "Lure"
+	var ball := SphereMesh.new()
+	ball.radius = height * 0.25
+	ball.height = height * 0.5
+	ball.radial_segments = 8
+	ball.rings = 4
+	lure_mesh.mesh = ball
+	var lure_material := StandardMaterial3D.new()
+	lure_material.albedo_color = lure_color
+	lure_material.emission_enabled = true
+	lure_material.emission = lure_color
+	lure_material.emission_energy_multiplier = lure_intensity
+	lure_mesh.material_override = lure_material
+	lure_mesh.position = Vector3(0.0, height * 0.35, -length * 0.7)
+	parent.add_child(lure_mesh)
 
 
 func get_random_target() -> Vector3:
@@ -266,64 +389,13 @@ func _on_body_exited_detection(body):
 
 
 func _remove_existing_mesh():
-	var existing_body = get_node_or_null("FishBody")
-	if existing_body:
-		existing_body.queue_free()
+	# Covers current ("FishRig") and legacy ("FishBody") naming.
+	for n_name in ["FishRig", "FishBody"]:
+		var n = get_node_or_null(n_name)
+		if n:
+			n.queue_free()
 	lure_mesh = null
-
-
-func _add_tail(fish_body: MeshInstance3D, base_material: StandardMaterial3D):
-	var tail_fin = MeshInstance3D.new()
-	tail_fin.name = "TailFin"
-
-	var tail_mesh = PrismMesh.new()
-	tail_mesh.size = Vector3(fish_size.x * 0.5, fish_size.y * 0.8, fish_size.z * 0.5)
-	tail_fin.mesh = tail_mesh
-
-	if mesh_style == MeshStyle.STRIPED:
-		var tail_material = StandardMaterial3D.new()
-		tail_material.albedo_color = stripe_color
-		tail_material.metallic = base_material.metallic
-		tail_material.roughness = base_material.roughness
-		tail_fin.material_override = tail_material
-	else:
-		tail_fin.material_override = base_material
-
-	tail_fin.position = Vector3(-fish_size.x * 0.7, 0, 0)
-	fish_body.add_child(tail_fin)
-
-
-func _add_stripe(parent: MeshInstance3D, position_y: float, material: StandardMaterial3D):
-	var stripe = MeshInstance3D.new()
-	stripe.name = "Stripe"
-
-	var stripe_mesh = BoxMesh.new()
-	stripe_mesh.size = Vector3(fish_size.x * 0.8, fish_size.y * stripe_thickness, fish_size.z * 1.01)
-	stripe.mesh = stripe_mesh
-
-	stripe.position.y = position_y
-	stripe.material_override = material
-	parent.add_child(stripe)
-
-
-func _create_lure(parent: MeshInstance3D):
-	lure_mesh = MeshInstance3D.new()
-	lure_mesh.name = "Lure"
-
-	var lure_sphere = SphereMesh.new()
-	lure_sphere.radius = fish_size.x * 0.1
-	lure_sphere.height = fish_size.x * 0.2
-	lure_mesh.mesh = lure_sphere
-
-	var lure_material = StandardMaterial3D.new()
-	lure_material.albedo_color = lure_color
-	lure_material.emission_enabled = true
-	lure_material.emission = lure_color
-	lure_material.emission_energy = lure_intensity
-	lure_mesh.material_override = lure_material
-
-	lure_mesh.position = Vector3(fish_size.x * 0.6, fish_size.y * 0.3, 0)
-	parent.add_child(lure_mesh)
+	tail_pivot = null
 
 
 func _apply_depth_preferences(delta):
@@ -353,10 +425,9 @@ func _apply_depth_preferences(delta):
 func _update_lure_emission(delta):
 	if not lure_mesh:
 		return
-
 	var lure_material = lure_mesh.material_override
 	if not lure_material:
 		return
-
+	# Godot 4 renamed emission_energy → emission_energy_multiplier.
 	var pulse = (1.0 + sin(Time.get_ticks_msec() / 500.0)) * 0.5
-	lure_material.emission_energy = lure_intensity + pulse * lure_intensity
+	lure_material.emission_energy_multiplier = lure_intensity + pulse * lure_intensity

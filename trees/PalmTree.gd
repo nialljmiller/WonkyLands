@@ -8,6 +8,24 @@ func _init() -> void:
 	elevation_min = 0.0
 	elevation_max = 10.0
 
+func distant_mesh() -> Mesh:
+	# Short wide shape to suggest fronds splayed out.
+	var m := SphereMesh.new()
+	m.radius = 2.2
+	m.height = 2.2
+	m.radial_segments = 6
+	m.rings = 2
+	return m
+
+func distant_material() -> Material:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.3, 0.5, 0.15)
+	mat.roughness = 0.8
+	return mat
+
+func distant_y_offset() -> float:
+	return 5.0
+
 func build_tree() -> Node3D:
 	var t := Node3D.new()
 	t.name = "palm_tree"

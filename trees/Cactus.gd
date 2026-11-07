@@ -8,6 +8,24 @@ func _init() -> void:
 	elevation_min = 0.0
 	elevation_max = 15.0
 
+func distant_mesh() -> Mesh:
+	var m := CylinderMesh.new()
+	m.top_radius = 0.5
+	m.bottom_radius = 0.5
+	m.height = 3.0
+	m.radial_segments = 6
+	m.rings = 1
+	return m
+
+func distant_material() -> Material:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.2, 0.4, 0.15)
+	mat.roughness = 0.9
+	return mat
+
+func distant_y_offset() -> float:
+	return 1.5
+
 func build_tree() -> Node3D:
 	var t := Node3D.new()
 	t.name = "cactus"

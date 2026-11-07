@@ -8,6 +8,25 @@ func _init() -> void:
 	elevation_min = 5.0
 	elevation_max = 50.0
 
+func distant_mesh() -> Mesh:
+	# Dead trees from far = a thin vertical dash.
+	var m := CylinderMesh.new()
+	m.top_radius = 0.4
+	m.bottom_radius = 0.5
+	m.height = 4.5
+	m.radial_segments = 5
+	m.rings = 1
+	return m
+
+func distant_material() -> Material:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.3, 0.25, 0.2)
+	mat.roughness = 0.9
+	return mat
+
+func distant_y_offset() -> float:
+	return 2.3
+
 func build_tree() -> Node3D:
 	var t := Node3D.new()
 	t.name = "dead_tree"

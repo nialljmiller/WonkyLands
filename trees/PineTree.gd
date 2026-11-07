@@ -8,6 +8,25 @@ func _init() -> void:
 	elevation_min = 15.0
 	elevation_max = 100.0
 
+func distant_mesh() -> Mesh:
+	# Pines are tall cones at range.
+	var m := CylinderMesh.new()
+	m.top_radius = 0.0
+	m.bottom_radius = 2.0
+	m.height = 6.0
+	m.radial_segments = 6
+	m.rings = 1
+	return m
+
+func distant_material() -> Material:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.2, 0.4, 0.15)
+	mat.roughness = 0.9
+	return mat
+
+func distant_y_offset() -> float:
+	return 3.5
+
 func build_tree() -> Node3D:
 	var t := Node3D.new()
 	t.name = "pine_tree"

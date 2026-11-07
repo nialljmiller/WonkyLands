@@ -23,6 +23,34 @@ func accepts(biome_name: String, elevation: float) -> bool:
 	return elevation >= elevation_min and elevation <= elevation_max
 
 # ---------------------------------------------------------------------
+# Distant representation. Beyond the near-detail ring we draw trees as
+# a single batched impostor (one MultiMeshInstance3D per species per
+# chunk, no sub-meshes, no collision). Each species declares the mesh
+# and material for its impostor plus a Y offset so the mesh sits on
+# the ground rather than through it.
+#
+# Default: a small green sphere. Override per species for better shape.
+# ---------------------------------------------------------------------
+func distant_mesh() -> Mesh:
+	var m := SphereMesh.new()
+	m.radius = 2.0
+	m.height = 4.0
+	m.radial_segments = 6
+	m.rings = 3
+	return m
+
+func distant_material() -> Material:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.3, 0.5, 0.2)
+	mat.roughness = 0.9
+	return mat
+
+func distant_y_offset() -> float:
+	# Height to add to the ground point so the distant mesh's center
+	# lands at roughly tree-canopy height.
+	return 3.0
+
+# ---------------------------------------------------------------------
 # Static mesh helpers — shared across species so each species file stays
 # short and declarative. Everything returns a bare Node ready to add as
 # a child.

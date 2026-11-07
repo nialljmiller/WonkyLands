@@ -3,16 +3,17 @@ extends Node3D
 # Terrain generation parameters
 @export var chunk_size: int = 128  # Size of each chunk
 @export var view_distance: int = 1  # Legacy — used only for trees (kept close)
-@export var terrain_view_distance: int = 5  # Terrain mesh ring. Covered by LOD.
-@export var water_view_distance: int = 3    # Water plane ring.
-@export var tree_view_distance: int = 1     # Tree placement — expensive, keep close.
-@export var chunk_update_interval: float = 0.4  # Re-check chunk loading this often (seconds)
+@export var terrain_view_distance: int = 7  # Terrain mesh ring. Covered by LOD.
+@export var water_view_distance: int = 4    # Water plane ring.
+@export var tree_view_distance: int = 1     # Near-detail tree ring (expensive).
+@export var chunk_update_interval: float = 0.3  # Re-check chunk loading this often (seconds)
 
 # LOD config. lod_rings[i] = maximum Chebyshev-distance (in chunks) for LOD i.
 # Anything beyond the last entry uses the final LOD. subdivisions[i] is the
 # grid density for that LOD — a chunk at LOD 0 has subdivisions^2 quads.
-@export var lod_rings: PackedInt32Array = PackedInt32Array([1, 3])
-@export var lod_subdivisions: PackedInt32Array = PackedInt32Array([128, 32, 8])
+# More rings = smoother LOD transitions as the player moves.
+@export var lod_rings: PackedInt32Array = PackedInt32Array([1, 2, 4])
+@export var lod_subdivisions: PackedInt32Array = PackedInt32Array([128, 64, 24, 8])
 
 @export var noise_scale: float = 0.05
 @export var amplitude: float = 50.0
