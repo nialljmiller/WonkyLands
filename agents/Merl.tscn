@@ -1,0 +1,7 @@
+[gd_scene load_steps=2 format=3 uid="uid://cm3rkqnpl0merl"]
+
+[ext_resource type="Script" path="res://agents/MerlController.gd" id="1_merl"]
+
+[node name="Merl" type="CharacterBody3D"]
+floor_snap_length = 0.3
+script = ExtResource("1_merl")

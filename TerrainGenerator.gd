@@ -2,6 +2,10 @@ extends Node3D
 
 # Terrain generation parameters
 @export var chunk_size: int = 128  # Size of each chunk
+# Chunks in a square of radius `permanent_chunk_radius` around origin are
+# built at LOD 0 at startup and never unloaded. Merl (the opossum agent)
+# roams inside this zone and relies on it always being fully loaded.
+@export var permanent_chunk_radius: int = 1    # 3x3 = ~384m x 384m at chunk_size 128
 @export var view_distance: int = 1  # Legacy — used only for trees (kept close)
 @export var terrain_view_distance: int = 10  # Terrain mesh ring. Covered by LOD.
 @export var water_view_distance: int = 5     # Water plane ring.
@@ -125,6 +129,14 @@ func _ready():
 		add_child(tree_timer)
 		tree_timer.timeout.connect(func(): initialize_tree_system())
 
+	# Spawn Merl (the opossum agent) after terrain + base are in place.
+	var merl_timer := Timer.new()
+	merl_timer.one_shot = true
+	merl_timer.wait_time = 0.8
+	merl_timer.autostart = true
+	add_child(merl_timer)
+	merl_timer.timeout.connect(func(): _spawn_merl())
+
 func _process(delta):
 	var player = get_node_or_null("Player")
 	if not player:
@@ -204,6 +216,26 @@ func add_plane_to_scene():
 	plane.global_transform = Transform3D(Basis.IDENTITY, spawn_origin)
 	add_child(plane)
 
+func _spawn_merl() -> void:
+	var merl_packed := load("res://agents/Merl.tscn") as PackedScene
+	if merl_packed == null:
+		push_warning("TerrainGenerator: Merl.tscn failed to load")
+		return
+	var merl := merl_packed.instantiate()
+	merl.name = "Merl"
+	# Home centred at origin, radius matched to the permanent-chunk zone.
+	merl.home_center = Vector3.ZERO
+	merl.home_radius = float(permanent_chunk_radius) * float(chunk_size) * 0.9
+	# Spawn him on the east side of the runway so he's visible from
+	# the cabin area at startup.
+	var spawn_x: float = 25.0
+	var spawn_z: float = 15.0
+	var ground: float = get_terrain_height(spawn_x, spawn_z)
+	# Set position BEFORE add_child so global_position doesn't warn about
+	# the node not being in the tree.
+	merl.position = Vector3(spawn_x, ground + 0.5, spawn_z)
+	add_child(merl)
+
 func _spawn_origin_base() -> void:
 	var base_packed := load("res://OriginBase.tscn") as PackedScene
 	if base_packed == null:
@@ -273,11 +305,17 @@ func _subdivisions_for_lod(lod: int) -> int:
 	return int(lod_subdivisions[i])
 
 func _lod_for_chunk(chunk_pos: Vector2, player_chunk: Vector2) -> int:
+	# Permanent chunks always at full detail.
+	if _is_permanent_chunk(chunk_pos):
+		return 0
 	var dist: int = int(max(abs(chunk_pos.x - player_chunk.x), abs(chunk_pos.y - player_chunk.y)))
 	for i in range(lod_rings.size()):
 		if dist <= int(lod_rings[i]):
 			return i
 	return lod_rings.size()
+
+func _is_permanent_chunk(chunk_pos: Vector2) -> bool:
+	return abs(chunk_pos.x) <= permanent_chunk_radius and abs(chunk_pos.y) <= permanent_chunk_radius
 
 # ---------------------------------------------------------------------
 # update_terrain_chunks — called whenever the player crosses a chunk
@@ -308,6 +346,11 @@ func update_terrain_chunks(player_pos: Vector3):
 			motion_xz /= m
 		else:
 			motion_xz = Vector2.ZERO
+
+	# Mark permanent chunks as kept regardless of player distance.
+	for px in range(-permanent_chunk_radius, permanent_chunk_radius + 1):
+		for pz in range(-permanent_chunk_radius, permanent_chunk_radius + 1):
+			chunks_to_keep[Vector2(px, pz)] = true
 
 	for x in range(pcx - vd, pcx + vd + 1):
 		for z in range(pcz - vd, pcz + vd + 1):
@@ -343,10 +386,10 @@ func update_terrain_chunks(player_pos: Vector3):
 	for req in to_queue:
 		generate_terrain_chunk(req.pos, req.lod)
 
-	# Unload chunks that rolled out of view.
+	# Unload chunks that rolled out of view — but never unload permanent ones.
 	var to_remove: Array = []
 	for cp in loaded_chunks.keys():
-		if not chunks_to_keep.has(cp):
+		if not chunks_to_keep.has(cp) and not _is_permanent_chunk(cp):
 			to_remove.append(cp)
 	for cp in to_remove:
 		remove_terrain_chunk(cp)
@@ -496,6 +539,8 @@ func _finalize_chunk(chunk_pos: Vector2, lod: int, world_pos_x: float, world_pos
 		World.notify_chunk_loaded(chunk_pos, chunk_node)
 
 func _chunk_is_still_wanted(chunk_pos: Vector2) -> bool:
+	if _is_permanent_chunk(chunk_pos):
+		return true
 	var ref_pos: Vector3 = Vector3.ZERO
 	var tracked: Node3D = _tracked_body()
 	if tracked != null:
