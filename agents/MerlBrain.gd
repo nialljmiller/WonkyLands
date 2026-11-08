@@ -16,7 +16,7 @@ extends RefCounted
 
 const Perception = preload("res://agents/Perception.gd")
 
-enum State { WANDER, INVESTIGATE_PLAYER, FLEEING, RESTING, OBSESSED, HIDING_FROM_PLANE }
+enum State { WANDER, INVESTIGATE_PLAYER, FLEEING, RESTING, OBSESSED, HIDING_FROM_PLANE, EATING, NAPPING }
 
 # Where the opossum is allowed to roam (soft centre + hard radius).
 var home_center: Vector3 = Vector3.ZERO
@@ -42,6 +42,18 @@ var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 # the brain can query what Merl has perceived rather than inventing
 # random positions. If null, we fall back to random wander targets.
 var memory = null
+# Optional needs handle — injected by controller. If null we skip the
+# needs-driven state transitions.
+var needs = null
+
+# Thresholds for how close Merl needs to be before he "arrives" and
+# consumes / naps.
+var eat_distance: float = 0.6
+var nap_arrive_distance: float = 1.0
+
+# Target references for current goal-directed state.
+var _food_target: Node3D = null       # berry the controller will consume
+var _nap_target: Vector3 = Vector3.ZERO
 
 func _init() -> void:
 	_rng.randomize()
@@ -70,9 +82,21 @@ func tick(self_pos: Vector3, player_pos: Vector3, delta: float, ground_y_at: Cal
 
 	if player_dist < flee_distance:
 		_enter_fleeing(self_pos, player_pos)
-	elif _state != State.FLEEING and _state != State.OBSESSED and _state != State.HIDING_FROM_PLANE and player_dist < investigate_approach_distance:
+	elif _state != State.FLEEING and _state != State.OBSESSED and _state != State.HIDING_FROM_PLANE and _state != State.EATING and _state != State.NAPPING and player_dist < investigate_approach_distance:
 		if _state != State.INVESTIGATE_PLAYER:
 			_enter_investigate(player_pos)
+
+	# --- Needs-driven transitions ---
+	# Only override the "base layer" states; if he's actively hiding or
+	# fleeing, deal with that first.
+	if _state == State.WANDER or _state == State.RESTING:
+		if needs != null:
+			if needs.is_hungry():
+				var food_mem: Dictionary = memory.most_salient(Perception.PerceptKind.FOOD) if memory != null else {}
+				if food_mem.size() > 0:
+					_enter_eating(food_mem)
+			elif needs.is_tired():
+				_enter_napping(self_pos, ground_y_at)
 
 	# --- Timed transitions (state has run its course) ---
 	if _state_timer <= 0.0:
@@ -109,6 +133,18 @@ func tick(self_pos: Vector3, player_pos: Vector3, delta: float, ground_y_at: Cal
 				_state_timer = _rng.randf_range(wander_min_dwell, wander_max_dwell)
 			State.HIDING_FROM_PLANE:
 				# Plane presumably gone — emerge cautiously
+				_state = State.WANDER
+				_pick_wander_target(ground_y_at)
+				_state_timer = _rng.randf_range(wander_min_dwell, wander_max_dwell)
+			State.EATING:
+				# Gave up / finished (actual consumption handled by
+				# controller when close enough, which also returns to
+				# WANDER via a callback).
+				_state = State.WANDER
+				_pick_wander_target(ground_y_at)
+				_state_timer = _rng.randf_range(wander_min_dwell, wander_max_dwell)
+			State.NAPPING:
+				# Woken up
 				_state = State.WANDER
 				_pick_wander_target(ground_y_at)
 				_state_timer = _rng.randf_range(wander_min_dwell, wander_max_dwell)
@@ -150,7 +186,46 @@ func tick(self_pos: Vector3, player_pos: Vector3, delta: float, ground_y_at: Cal
 		State.HIDING_FROM_PLANE:
 			# Freeze in place, low. Don't move. Watch the sky.
 			return _intent(self_pos, 0.0, "hiding_from_plane", true)
+		State.EATING:
+			# Head to the food target. The controller is responsible for
+			# "arriving" + consuming via on_eat() below.
+			if _food_target != null and is_instance_valid(_food_target):
+				return _intent(_food_target.global_position, 0.75, "eating", true)
+			else:
+				# Food vanished (other agent? expired?) — bail out next tick
+				_state_timer = 0.0
+				return _intent(self_pos, 0.0, "eating", false)
+		State.NAPPING:
+			# Travel to the nap spot, then stay still. Speed drops off
+			# as he approaches — he's winding down.
+			var d: float = Vector2(self_pos.x - _nap_target.x, self_pos.z - _nap_target.z).length()
+			if d < nap_arrive_distance:
+				# Satisfy sleep need while stationary — controller does
+				# the actual needs.sleep(delta) call.
+				return _intent(_nap_target, 0.0, "napping", false)
+			var frac: float = clampf(d / 6.0, 0.0, 1.0)
+			return _intent(_nap_target, 0.35 + 0.3 * frac, "napping", false)
 	return _intent(self_pos, 0.0, "idle", false)
+
+# Called by the controller when Merl arrives at food (brain state =
+# EATING and he's within eat_distance). Controller passes the berry
+# node so we can clear our reference; the controller handles the
+# actual consume + needs.eat() + spawner notification.
+func on_eat_consumed() -> void:
+	_food_target = null
+	# Return to wandering next tick; state_timer <= 0 forces a
+	# transition. The actual needs.eat() happens in the controller.
+	_state_timer = 0.0
+	_state = State.WANDER
+
+# Called each tick by the controller while NAPPING — returns true if
+# Merl has arrived at his nap spot (so the controller can call
+# needs.sleep()).
+func is_napping_at_spot(self_pos: Vector3) -> bool:
+	if _state != State.NAPPING:
+		return false
+	var d: float = Vector2(self_pos.x - _nap_target.x, self_pos.z - _nap_target.z).length()
+	return d < nap_arrive_distance
 
 # ---------------------------------------------------------------------
 # State entry helpers
@@ -202,6 +277,32 @@ func _enter_hiding_from_plane(self_pos: Vector3, plane_pos: Vector3) -> void:
 	_state_timer = _rng.randf_range(5.0, 12.0)
 	# No target movement — he just freezes in place.
 	_current_target = self_pos
+
+func _enter_eating(food_mem: Dictionary) -> void:
+	_state = State.EATING
+	_state_timer = 30.0  # fail-safe timeout if food becomes unreachable
+	# Memory entries for FOOD carry the object_ref (controller side).
+	# But memory.all_items() doesn't retain it — we re-query via the
+	# nearest FOOD percept held by memory. Controller will walk to the
+	# position and handle consumption when close.
+	_food_target = null   # controller will match by proximity
+
+func _enter_napping(self_pos: Vector3, ground_y_at: Callable) -> void:
+	_state = State.NAPPING
+	_state_timer = _rng.randf_range(25.0, 50.0)
+	# Nap under the nearest remembered tree if we know one; otherwise
+	# nap right where we are.
+	var pick: Dictionary = {}
+	if memory != null:
+		pick = memory.most_salient(Perception.PerceptKind.TREE)
+	if pick.size() > 0:
+		# Offset slightly from tree centre so he's "beside" it, not in it.
+		var off: Vector3 = Vector3(sin(_rng.randf() * TAU), 0.0, cos(_rng.randf() * TAU)) * 1.5
+		_nap_target = pick.position + off
+	else:
+		_nap_target = self_pos
+	if ground_y_at.is_valid():
+		_nap_target.y = ground_y_at.call(_nap_target.x, _nap_target.z)
 
 func _pick_wander_target(ground_y_at: Callable = Callable()) -> void:
 	# Random point in home area, biased slightly toward centre so he

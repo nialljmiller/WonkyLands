@@ -14,7 +14,7 @@ extends RefCounted
 ##     sense:      int (Sense.SIGHT or Sense.HEARING)
 ##   }
 
-enum PerceptKind { PLAYER, PLANE, CABIN, TREE, FISH }
+enum PerceptKind { PLAYER, PLANE, CABIN, TREE, FISH, FOOD }
 enum Sense { SIGHT, HEARING }
 
 var sight_radius: float = 30.0
@@ -66,6 +66,26 @@ func scan(owner_pos: Vector3, owner_fwd_xz: Vector3, scene_root: Node) -> Array:
 	# -----------------------------------------------------------------
 	if _horizontal_distance(owner_pos, _cached_cabin_pos) < sight_radius * 1.5:
 		out.append(_make_percept(PerceptKind.CABIN, _cached_cabin_pos, 0.25, "cabin", Sense.SIGHT))
+
+	# -----------------------------------------------------------------
+	# Food — read from FoodSpawner if present (sibling node under
+	# TerrainGenerator). Food is high-salience when hungry; we always
+	# report it and let the brain weight by need.
+	# -----------------------------------------------------------------
+	var food_sys = scene_root.get_node_or_null("FoodSpawner")
+	if food_sys != null and "active_food" in food_sys:
+		for berry in food_sys.active_food:
+			if berry == null or not is_instance_valid(berry):
+				continue
+			var fp: Vector3 = berry.global_position
+			var fd: float = _horizontal_distance(owner_pos, fp)
+			if fd < sight_radius and _in_fov(owner_pos, fp, fwd, sight_cos_half):
+				var perc: Dictionary = _make_percept(PerceptKind.FOOD, fp,
+					_salience(fd, sight_radius, 0.85),
+					"food_%d" % berry.get_instance_id(),
+					Sense.SIGHT)
+				perc["object_ref"] = berry   # the controller needs the ref to consume
+				out.append(perc)
 
 	# -----------------------------------------------------------------
 	# Trees — read from TreeSystem's placed-tree registry if present.

@@ -6,6 +6,7 @@ extends CharacterBody3D
 const MerlBrain = preload("res://agents/MerlBrain.gd")
 const Perception = preload("res://agents/Perception.gd")
 const Memory = preload("res://agents/Memory.gd")
+const Needs = preload("res://agents/Needs.gd")
 
 @export var home_center: Vector3 = Vector3.ZERO
 @export var home_radius: float = 180.0
@@ -18,6 +19,7 @@ const Memory = preload("res://agents/Memory.gd")
 var _brain: Variant = null
 var _perception: Variant = null
 var _memory: Variant = null
+var _needs: Variant = null
 var _perception_timer: float = 0.0
 var _target_pos: Vector3 = Vector3.ZERO
 var _speed_mul: float = 0.0
@@ -34,10 +36,12 @@ var _head_pivot: Node3D = null
 func _ready() -> void:
 	_perception = Perception.new()
 	_memory = Memory.new()
+	_needs = Needs.new()
 	_brain = MerlBrain.new()
 	_brain.home_center = home_center
 	_brain.home_radius = home_radius
 	_brain.memory = _memory
+	_brain.needs = _needs
 	_init_materials()
 	_build_visuals()
 	# Ground the spawn position via terrain query if available
@@ -59,8 +63,17 @@ func _physics_process(delta: float) -> void:
 		new_percepts = _perception.scan(global_position, -transform.basis.z, _scene_root())
 	_memory.update(delta, new_percepts)
 
+	# Needs decay — movement factor from previous tick's speed
+	var movement_factor: float = clamp(Vector2(velocity.x, velocity.z).length() / walk_speed, 0.0, 1.0)
+	_needs.tick(delta, movement_factor)
+
 	var intent: Dictionary = _brain.tick(global_position, player_pos, delta,
 		Callable(self, "_ground_y_at"))
+
+	# Cross-boundary interactions: eating + sleeping need world/needs access
+	# that the brain itself can't do.
+	_handle_eating(delta)
+	_handle_napping(delta)
 	_target_pos = intent.target
 	_speed_mul = intent.speed_mul
 	_sniffing = intent.sniff
@@ -136,6 +149,42 @@ func _scene_root() -> Node:
 	# OriginBase). They all live under TerrainGenerator — use that as
 	# the "root" for lookups.
 	return _terrain if _terrain != null else get_tree().current_scene
+
+# ---------------------------------------------------------------------
+# Needs-driven interactions
+# ---------------------------------------------------------------------
+func _handle_eating(_delta: float) -> void:
+	# If brain says EATING, find the closest active berry we remember
+	# and, if we're close enough, consume it.
+	if _brain._state != MerlBrain.State.EATING:
+		return
+	var spawner = _scene_root().get_node_or_null("FoodSpawner")
+	if spawner == null or not "active_food" in spawner:
+		return
+	# Nearest berry within sight
+	var nearest: Node3D = null
+	var best_dist: float = 1e9
+	for b in spawner.active_food:
+		if b == null or not is_instance_valid(b):
+			continue
+		var d: float = global_position.distance_to(b.global_position)
+		if d < best_dist:
+			best_dist = d
+			nearest = b
+	if nearest == null:
+		return
+	# Steer the brain's target to this berry
+	_brain._food_target = nearest
+	if best_dist < _brain.eat_distance:
+		spawner.consume(nearest)
+		_needs.eat()
+		_brain.on_eat_consumed()
+
+func _handle_napping(delta: float) -> void:
+	if _brain._state != MerlBrain.State.NAPPING:
+		return
+	if _brain.is_napping_at_spot(global_position):
+		_needs.sleep(delta)
 
 func _ground_y_at(x: float, z: float) -> float:
 	if _terrain != null:

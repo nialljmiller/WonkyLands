@@ -217,22 +217,27 @@ func add_plane_to_scene():
 	add_child(plane)
 
 func _spawn_merl() -> void:
+	# Food first — Merl's perception needs the spawner to exist when
+	# he does his first scan.
+	var spawner_script := load("res://agents/FoodSpawner.gd") as GDScript
+	if spawner_script != null:
+		var spawner = spawner_script.new()
+		spawner.name = "FoodSpawner"
+		spawner.home_center = Vector3.ZERO
+		spawner.home_radius = float(permanent_chunk_radius) * float(chunk_size) * 0.85
+		add_child(spawner)
+
 	var merl_packed := load("res://agents/Merl.tscn") as PackedScene
 	if merl_packed == null:
 		push_warning("TerrainGenerator: Merl.tscn failed to load")
 		return
 	var merl := merl_packed.instantiate()
 	merl.name = "Merl"
-	# Home centred at origin, radius matched to the permanent-chunk zone.
 	merl.home_center = Vector3.ZERO
 	merl.home_radius = float(permanent_chunk_radius) * float(chunk_size) * 0.9
-	# Spawn him on the east side of the runway so he's visible from
-	# the cabin area at startup.
 	var spawn_x: float = 25.0
 	var spawn_z: float = 15.0
 	var ground: float = get_terrain_height(spawn_x, spawn_z)
-	# Set position BEFORE add_child so global_position doesn't warn about
-	# the node not being in the tree.
 	merl.position = Vector3(spawn_x, ground + 0.5, spawn_z)
 	add_child(merl)
 
