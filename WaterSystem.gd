@@ -50,6 +50,10 @@ var water_plane_mesh: PlaneMesh
 # Cached shader resource and timing information
 const WATER_SHADER_PATH := "res://RealisticWaterShader.gdshader"
 var water_shader: Shader
+# One ShaderMaterial is built and shared across every water chunk —
+# they're all identical except for position. Previously each chunk built
+# its own, so updating "time" meant looping N materials every tick.
+var _shared_water_material: ShaderMaterial = null
 var wave_time: float = 0.0
 @export var shader_update_interval: float = 0.033  # 30 Hz — enough for visible wave motion
 var _shader_update_timer: float = 0.0
@@ -92,15 +96,11 @@ func initialize_subsystems():
 	ripple_system.name = "RippleSystem"
 	add_child(ripple_system)
 
-# Update shader parameters for all water chunks
+# Update shader parameters — all chunks share one material, so one
+# write updates every chunk at once.
 func update_water_shaders():
-		for chunk_pos in water_chunks:
-				var water_mesh = water_chunks[chunk_pos]
-				if water_mesh and is_instance_valid(water_mesh):
-						var material = water_mesh.material_override
-						if material and material is ShaderMaterial:
-								# Apply shared wave time for all chunks
-								material.set_shader_parameter("time", wave_time)
+		if _shared_water_material != null:
+				_shared_water_material.set_shader_parameter("time", wave_time)
 
 func ensure_water_shader():
 		if water_shader:
@@ -134,46 +134,33 @@ func create_water_chunk(chunk_pos: Vector2, terrain_generator = null):
 	standard_material.metallic = water_metallic
 	standard_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	
-	# Create water material with shader
+	# Create water material with shader — one shared instance across all
+	# chunks, built lazily the first time a chunk is created.
 	ensure_water_shader()
-
-	var water_material = ShaderMaterial.new()
-	water_material.shader = water_shader
-
-	# Set shader parameters
-	water_material.set_shader_parameter("shallow_color", water_color)
-	water_material.set_shader_parameter("deep_color", deep_water_color)
-	water_material.set_shader_parameter("depth_factor", 0.3)
-	
-	# Wave parameters
-	water_material.set_shader_parameter("wave_height", wave_height)
-	water_material.set_shader_parameter("wave_speed", wave_speed)
-	water_material.set_shader_parameter("wave_scale", wave_scale)
-	water_material.set_shader_parameter("wave_clarity", 0.8)
-	water_material.set_shader_parameter("wave_direction1", wave_direction1)
-	water_material.set_shader_parameter("wave_direction2", wave_direction2)
-	water_material.set_shader_parameter("wave_direction3", wave_direction3)
-	
-	# Foam parameters
-	water_material.set_shader_parameter("foam_color", foam_color)
-	water_material.set_shader_parameter("foam_amount", foam_amount)
-	water_material.set_shader_parameter("edge_foam", edge_foam)
-	
-	# Material properties
-	water_material.set_shader_parameter("metallic", water_metallic)
-	water_material.set_shader_parameter("roughness", water_roughness)
-	water_material.set_shader_parameter("specular", water_specular)
-	water_material.set_shader_parameter("fresnel_power", water_fresnel)
-	
-	# Flow parameters
-	water_material.set_shader_parameter("flow_direction", flow_direction)
-	water_material.set_shader_parameter("flow_strength", flow_strength)
-	
-	# Initial time value
-	water_material.set_shader_parameter("time", wave_time)
-	
-	# Apply material
-	water_mesh_instance.material_override = water_material if water_material.shader != null else standard_material
+	if _shared_water_material == null:
+		_shared_water_material = ShaderMaterial.new()
+		_shared_water_material.shader = water_shader
+		_shared_water_material.set_shader_parameter("shallow_color", water_color)
+		_shared_water_material.set_shader_parameter("deep_color", deep_water_color)
+		_shared_water_material.set_shader_parameter("depth_factor", 0.3)
+		_shared_water_material.set_shader_parameter("wave_height", wave_height)
+		_shared_water_material.set_shader_parameter("wave_speed", wave_speed)
+		_shared_water_material.set_shader_parameter("wave_scale", wave_scale)
+		_shared_water_material.set_shader_parameter("wave_clarity", 0.8)
+		_shared_water_material.set_shader_parameter("wave_direction1", wave_direction1)
+		_shared_water_material.set_shader_parameter("wave_direction2", wave_direction2)
+		_shared_water_material.set_shader_parameter("wave_direction3", wave_direction3)
+		_shared_water_material.set_shader_parameter("foam_color", foam_color)
+		_shared_water_material.set_shader_parameter("foam_amount", foam_amount)
+		_shared_water_material.set_shader_parameter("edge_foam", edge_foam)
+		_shared_water_material.set_shader_parameter("metallic", water_metallic)
+		_shared_water_material.set_shader_parameter("roughness", water_roughness)
+		_shared_water_material.set_shader_parameter("specular", water_specular)
+		_shared_water_material.set_shader_parameter("fresnel_power", water_fresnel)
+		_shared_water_material.set_shader_parameter("flow_direction", flow_direction)
+		_shared_water_material.set_shader_parameter("flow_strength", flow_strength)
+		_shared_water_material.set_shader_parameter("time", wave_time)
+	water_mesh_instance.material_override = _shared_water_material if _shared_water_material.shader != null else standard_material
 	
 	# Position water at the water level
 	water_mesh_instance.position = Vector3(world_pos_x, water_level, world_pos_z)
@@ -542,15 +529,11 @@ func get_wave_height_at_position(world_pos: Vector3) -> float:
 func dot(v1: Vector2, v2: Vector2) -> float:
 	return v1.x * v2.x + v1.y * v2.y
 
-# Apply ripple texture to all water chunks
+# Apply ripple texture — one write to the shared material covers every chunk.
 func apply_ripple_texture(texture: Texture2D):
-	for chunk_pos in water_chunks:
-		var water_mesh = water_chunks[chunk_pos]
-		if water_mesh and is_instance_valid(water_mesh):
-			var material = water_mesh.material_override
-			if material and material is ShaderMaterial:
-				material.set_shader_parameter("ripple_texture", texture)
-				material.set_shader_parameter("enable_ripples", true)
+	if _shared_water_material != null:
+		_shared_water_material.set_shader_parameter("ripple_texture", texture)
+		_shared_water_material.set_shader_parameter("enable_ripples", true)
 
 # Get water level (for external systems)
 func get_water_level() -> float:

@@ -36,8 +36,21 @@ var default_swim_speed: float = 0.0
 var water_system
 var nearby_fish: Array = []
 var lure_mesh: MeshInstance3D
+var lure_material: StandardMaterial3D = null
 var tail_pivot: Node3D = null           # child node used for wiggle animation
 var _wiggle_phase: float = 0.0
+var _cached_player: Node3D = null
+var _lure_update_accum: float = 0.0
+
+# Resource caches — keyed by appearance signature so every fish instanced
+# from the same species scene reuses the same meshes + materials instead
+# of each one building its own with SurfaceTool at _ready.
+static var _MESH_CACHE: Dictionary = {}
+static var _MAT_CACHE: Dictionary = {}
+# One eye/pupil material pair is shared across EVERY fish — eyes are the
+# same regardless of species.
+static var _EYE_WHITE_MAT: StandardMaterial3D = null
+static var _PUPIL_MAT: StandardMaterial3D = null
 
 func _ready():
 	# Save initial spawn position as center of territory
@@ -75,22 +88,25 @@ func _ready():
 	detection_area.body_entered.connect(_on_body_entered_detection)
 	detection_area.body_exited.connect(_on_body_exited_detection)
 
-	# Resolve water system via World — no tree walking.
+	# Resolve water system + player via World — no tree walking, no
+	# repeated lookups in _physics_process.
 	if typeof(World) != TYPE_NIL:
 		water_system = World.get_water_system()
+		_cached_player = World.get_player()
+		# If the player hasn't registered yet, grab it as soon as it does.
+		if _cached_player == null:
+			World.player_registered.connect(func(p): _cached_player = p)
 
 
 func _physics_process(delta):
 	# Reduce timer for changing target
 	time_until_new_target -= delta
 
-	# Get player via World
-	var player: Node = null
-	if typeof(World) != TYPE_NIL:
-		player = World.get_player()
+	var player: Node = _cached_player if is_instance_valid(_cached_player) else null
 	var player_too_close = false
+	var flee_dist_sq: float = flee_distance * flee_distance
 
-	if player and player.global_position.distance_to(global_position) < flee_distance:
+	if player and player.global_position.distance_squared_to(global_position) < flee_dist_sq:
 		# Flee from player
 		var flee_direction = global_position - player.global_position
 		flee_direction.y = 0  # Keep at same depth
@@ -142,8 +158,13 @@ func _physics_process(delta):
 	# Move the fish
 	move_and_slide()
 
-	# Update lure visuals after movement
-	_update_lure_emission(delta)
+	# Update lure visuals after movement (throttled — emission energy
+	# doesn't need to be updated every frame; ~15 Hz is plenty).
+	if lure_mesh != null:
+		_lure_update_accum += delta
+		if _lure_update_accum >= 0.066:
+			_update_lure_emission(_lure_update_accum)
+			_lure_update_accum = 0.0
 
 
 func create_fish_mesh():
@@ -157,8 +178,11 @@ func create_fish_mesh():
 	var height: float = fish_size.y
 	var width: float = fish_size.z
 
-	var body_mat := _make_body_material()
-	var accent_mat := _make_accent_material(body_mat)
+	var sig: String = _appearance_signature()
+	var mats: Dictionary = _get_or_build_materials(sig)
+	var meshes: Dictionary = _get_or_build_meshes(sig, length, height, width)
+	var body_mat: StandardMaterial3D = mats.body
+	var accent_mat: StandardMaterial3D = mats.accent
 
 	var rig := Node3D.new()
 	rig.name = "FishRig"
@@ -166,14 +190,14 @@ func create_fish_mesh():
 	# ---- Body: proper tapered teardrop mesh ----
 	var body := MeshInstance3D.new()
 	body.name = "Body"
-	body.mesh = _build_tapered_body(length, height, width)
+	body.mesh = meshes.body
 	body.material_override = body_mat
 	rig.add_child(body)
 
 	# ---- Dorsal fin: curved triangle on top ----
 	var dorsal := MeshInstance3D.new()
 	dorsal.name = "Dorsal"
-	dorsal.mesh = _build_dorsal_fin(length * 0.4, height * 0.55, width * 0.08)
+	dorsal.mesh = meshes.dorsal
 	dorsal.material_override = body_mat
 	dorsal.position = Vector3(0.0, height * 0.42, length * 0.0)
 	rig.add_child(dorsal)
@@ -182,7 +206,7 @@ func create_fish_mesh():
 	for side in [-1.0, 1.0]:
 		var fin := MeshInstance3D.new()
 		fin.name = "PectoralFin"
-		fin.mesh = _build_fin_blade(length * 0.22, width * 1.4, height * 0.04)
+		fin.mesh = meshes.fin
 		fin.material_override = body_mat
 		fin.position = Vector3(side * width * 0.42, -height * 0.05, -length * 0.08)
 		fin.rotation_degrees = Vector3(0.0, 90.0 * side, -25.0 * side)
@@ -194,42 +218,26 @@ func create_fish_mesh():
 	tail_pivot.position = Vector3(0.0, 0.0, length * 0.45)
 	var tail_fin := MeshInstance3D.new()
 	tail_fin.name = "TailFin"
-	tail_fin.mesh = _build_forked_tail(length * 0.35, height * 1.1, width * 0.06)
+	tail_fin.mesh = meshes.tail
 	tail_fin.material_override = body_mat
 	tail_fin.position = Vector3(0.0, 0.0, length * 0.15)
 	tail_pivot.add_child(tail_fin)
 	rig.add_child(tail_pivot)
 
-	# ---- Eyes with pupil + sclera ----
-	var eye_white_mat := StandardMaterial3D.new()
-	eye_white_mat.albedo_color = Color(0.92, 0.88, 0.8)
-	eye_white_mat.metallic = 0.1
-	eye_white_mat.roughness = 0.5
-	var pupil_mat := StandardMaterial3D.new()
-	pupil_mat.albedo_color = Color(0.05, 0.05, 0.08)
-	pupil_mat.metallic = 0.3
-	pupil_mat.roughness = 0.2
+	# ---- Eyes with pupil + sclera (meshes + materials shared globally) ----
+	var eye_white_mat: StandardMaterial3D = _get_eye_white_mat()
+	var pupil_mat: StandardMaterial3D = _get_pupil_mat()
 	for side in [-1.0, 1.0]:
 		var eye := MeshInstance3D.new()
 		eye.name = "Eye"
-		var eye_mesh := SphereMesh.new()
-		eye_mesh.radius = height * 0.17
-		eye_mesh.height = height * 0.34
-		eye_mesh.radial_segments = 8
-		eye_mesh.rings = 4
-		eye.mesh = eye_mesh
+		eye.mesh = meshes.eye
 		eye.material_override = eye_white_mat
 		eye.position = Vector3(side * width * 0.4, height * 0.15, -length * 0.33)
 		rig.add_child(eye)
 
 		var pupil := MeshInstance3D.new()
 		pupil.name = "Pupil"
-		var pupil_mesh := SphereMesh.new()
-		pupil_mesh.radius = height * 0.09
-		pupil_mesh.height = height * 0.18
-		pupil_mesh.radial_segments = 6
-		pupil_mesh.rings = 3
-		pupil.mesh = pupil_mesh
+		pupil.mesh = meshes.pupil
 		pupil.material_override = pupil_mat
 		pupil.position = Vector3(side * width * 0.5, height * 0.15, -length * 0.36)
 		rig.add_child(pupil)
@@ -245,6 +253,71 @@ func create_fish_mesh():
 		lure_mesh = null
 
 	add_child(rig)
+
+
+# ---------------------------------------------------------------------
+# Appearance caches — every fish instanced from the same species scene
+# has identical exports (color, size, style, stripe_color, lure_enabled),
+# so one set of meshes + materials can be shared across every instance.
+# Keyed on a stringified signature of those exports.
+# ---------------------------------------------------------------------
+func _appearance_signature() -> String:
+	return "%s|%s|%d|%s|%d" % [
+		fish_color.to_html(),
+		str(fish_size),
+		int(mesh_style),
+		stripe_color.to_html(),
+		int(lure_enabled),
+	]
+
+func _get_or_build_materials(sig: String) -> Dictionary:
+	if _MAT_CACHE.has(sig):
+		return _MAT_CACHE[sig]
+	var body_mat := _make_body_material()
+	var accent_mat := _make_accent_material(body_mat)
+	var entry := {"body": body_mat, "accent": accent_mat}
+	_MAT_CACHE[sig] = entry
+	return entry
+
+func _get_or_build_meshes(sig: String, length: float, height: float, width: float) -> Dictionary:
+	if _MESH_CACHE.has(sig):
+		return _MESH_CACHE[sig]
+	var eye := SphereMesh.new()
+	eye.radius = height * 0.17
+	eye.height = height * 0.34
+	eye.radial_segments = 8
+	eye.rings = 4
+	var pupil := SphereMesh.new()
+	pupil.radius = height * 0.09
+	pupil.height = height * 0.18
+	pupil.radial_segments = 6
+	pupil.rings = 3
+	var entry := {
+		"body":   _build_tapered_body(length, height, width),
+		"dorsal": _build_dorsal_fin(length * 0.4, height * 0.55, width * 0.08),
+		"fin":    _build_fin_blade(length * 0.22, width * 1.4, height * 0.04),
+		"tail":   _build_forked_tail(length * 0.35, height * 1.1, width * 0.06),
+		"eye":    eye,
+		"pupil":  pupil,
+	}
+	_MESH_CACHE[sig] = entry
+	return entry
+
+static func _get_eye_white_mat() -> StandardMaterial3D:
+	if _EYE_WHITE_MAT == null:
+		_EYE_WHITE_MAT = StandardMaterial3D.new()
+		_EYE_WHITE_MAT.albedo_color = Color(0.92, 0.88, 0.8)
+		_EYE_WHITE_MAT.metallic = 0.1
+		_EYE_WHITE_MAT.roughness = 0.5
+	return _EYE_WHITE_MAT
+
+static func _get_pupil_mat() -> StandardMaterial3D:
+	if _PUPIL_MAT == null:
+		_PUPIL_MAT = StandardMaterial3D.new()
+		_PUPIL_MAT.albedo_color = Color(0.05, 0.05, 0.08)
+		_PUPIL_MAT.metallic = 0.3
+		_PUPIL_MAT.roughness = 0.2
+	return _PUPIL_MAT
 
 
 # ---------------------------------------------------------------------

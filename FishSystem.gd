@@ -14,6 +14,12 @@ class_name FishSystem
 # Spawn throttling — avoids a frame spike when a new chunk loads.
 @export var max_spawns_per_frame: int = 4
 
+# Fish beyond this distance from the player have their _physics_process
+# disabled entirely — no AI, no schooling, no depth checks. With 400+
+# fish this is the biggest win of the optimization pass.
+@export var fish_cull_distance: float = 80.0
+@export var fish_cull_check_interval: float = 0.5
+
 # Where to look for species scenes. Anything named *Fish.tscn in here is
 # treated as a species. "Fish.tscn" itself (if it existed) would be
 # excluded — only variant scenes qualify.
@@ -32,6 +38,8 @@ var _species_scenes: Array[PackedScene] = []
 
 var debug_fish_count_timer: float = 0.0
 var total_fish_created: int = 0
+var _cull_timer: float = 0.0
+var _cached_player: Node3D = null
 
 # ---------------------------------------------------------------------
 # Lifecycle
@@ -39,6 +47,9 @@ var total_fish_created: int = 0
 func _ready() -> void:
 	if typeof(World) != TYPE_NIL:
 		water_system = World.get_water_system()
+		_cached_player = World.get_player()
+		if _cached_player == null:
+			World.player_registered.connect(func(p): _cached_player = p)
 	if water_system == null:
 		water_system = get_parent()  # legacy fallback
 
@@ -52,10 +63,37 @@ func _process(delta: float) -> void:
 	if _pending_fish_spawns.size() > 0:
 		_process_pending_spawns()
 
+	_cull_timer += delta
+	if _cull_timer >= fish_cull_check_interval:
+		_cull_timer = 0.0
+		_update_fish_culling()
+
 	debug_fish_count_timer += delta
-	if debug_fish_count_timer >= 3.0:
+	if debug_fish_count_timer >= 10.0:
 		debug_fish_count_timer = 0.0
-		print("Active fish: ", active_fish.size(), " / created ", total_fish_created, " / species ", _species_scenes.size())
+		var awake: int = 0
+		for f in active_fish:
+			if is_instance_valid(f) and f.is_physics_processing():
+				awake += 1
+		print("Active fish: ", active_fish.size(), " (awake ", awake, ") / species ", _species_scenes.size())
+
+# ---------------------------------------------------------------------
+# Distance culling — disable _physics_process on fish far from the
+# player. Visibility is handled by the renderer's frustum culling;
+# this is purely about CPU.
+# ---------------------------------------------------------------------
+func _update_fish_culling() -> void:
+	var player: Node3D = _cached_player if is_instance_valid(_cached_player) else null
+	if player == null:
+		return
+	var player_pos: Vector3 = player.global_position
+	var cull_sq: float = fish_cull_distance * fish_cull_distance
+	for f in active_fish:
+		if not is_instance_valid(f):
+			continue
+		var near: bool = f.global_position.distance_squared_to(player_pos) < cull_sq
+		if f.is_physics_processing() != near:
+			f.set_physics_process(near)
 
 # ---------------------------------------------------------------------
 # Species discovery — anything named *Fish.tscn under species_dir counts

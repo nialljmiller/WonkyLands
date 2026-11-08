@@ -39,6 +39,12 @@ var moon2_light: DirectionalLight3D = null
 var moon2_mesh: MeshInstance3D = null
 var moon2_material: ShaderMaterial = null
 
+# Appearance updates (shader param writes for sun/moon tint, sky colors,
+# environment light energy) don't need 60 Hz — a visible lerp over tens
+# of seconds is imperceptible at 10 Hz.
+@export var appearance_update_hz: float = 10.0
+var _appearance_accum: float = 0.0
+
 # ---------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------
@@ -47,17 +53,25 @@ func _ready() -> void:
 	_build_sun()
 	_build_moons()
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if engine == null:
 		return
+	# Position + anchor every frame — if you miss a frame here you get
+	# visible parallax as the player moves.
 	_update_position(sun_mesh, sun_light, engine.sun_dir, engine.sun_angular_radius)
 	_update_position(moon1_mesh, moon1_light, engine.moon1_dir, engine.moon1_angular_radius)
 	_update_position(moon2_mesh, moon2_light, engine.moon2_dir, engine.moon2_angular_radius)
 	_anchor_to_player()
-	_update_sun_appearance()
-	_update_moon_appearance(moon1_material, moon1_light, engine.moon1_dir, engine.moon1_phase, moon1_light_peak_energy, engine.moon1_color)
-	_update_moon_appearance(moon2_material, moon2_light, engine.moon2_dir, engine.moon2_phase, moon2_light_peak_energy, engine.moon2_color)
-	_update_sky_colors()
+	# Appearance (tint, brightness, sky/fog colors) tolerates a few frames
+	# of staleness — throttle shader param writes.
+	_appearance_accum += delta
+	var period: float = 1.0 / maxf(appearance_update_hz, 0.001)
+	if _appearance_accum >= period:
+		_appearance_accum = 0.0
+		_update_sun_appearance()
+		_update_moon_appearance(moon1_material, moon1_light, engine.moon1_dir, engine.moon1_phase, moon1_light_peak_energy, engine.moon1_color)
+		_update_moon_appearance(moon2_material, moon2_light, engine.moon2_dir, engine.moon2_phase, moon2_light_peak_energy, engine.moon2_color)
+		_update_sky_colors()
 
 func _update_position(mesh: MeshInstance3D, light: DirectionalLight3D, dir: Vector3, angular_radius: float) -> void:
 	# Place mesh at direction * render_distance, scaled so its angular

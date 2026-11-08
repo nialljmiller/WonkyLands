@@ -41,6 +41,12 @@ const CoordinateTransforms = preload("res://astronomy/CoordinateTransforms.gd")
 # How many game seconds elapse per real wall-clock second.
 # 60 = 1 real-minute = 1 game-hour. 3600 = 1 real-second = 1 game-hour.
 @export var time_scale: float = 60.0
+# How often we recompute celestial positions. At time_scale = 60 the sun
+# moves ~1 arcminute per real second — recomputing at 10 Hz still gives
+# subarcsecond sampling between updates. Kepler's equation is iterative,
+# so cutting this from 60 Hz to 10 Hz is a solid CPU save.
+@export var update_hz: float = 10.0
+var _update_accum: float = 0.0
 
 # ---------------------------------------------------------------------
 # Sun — the system's primary star.
@@ -108,15 +114,21 @@ func _ready() -> void:
 		World.register_astronomical_system(self)
 
 func _process(delta: float) -> void:
-	# Advance JD by real-time elapsed × time_scale, converted to days.
+	# JD advances every frame so time-of-day reads are always current,
+	# but we only recompute the (expensive) celestial positions at
+	# update_hz. Between updates, sun_dir / moon_dir stay put — which is
+	# fine since 100 ms of game-time = well under an arcminute of motion.
 	current_jd += delta * time_scale / CoordinateTransforms.SECONDS_PER_DAY
-	_update_all()
-
-	if typeof(World) != TYPE_NIL:
-		var frac_day: float = current_jd - floor(current_jd - 0.5) - 0.5
-		var hours: float = fposmod(frac_day * 24.0 + 12.0, 24.0)
-		World.notify_time_changed(hours, int(current_jd))
-		World.notify_sun_direction(sun_dir)
+	_update_accum += delta
+	var period: float = 1.0 / maxf(update_hz, 0.001)
+	if _update_accum >= period:
+		_update_accum = 0.0
+		_update_all()
+		if typeof(World) != TYPE_NIL:
+			var frac_day: float = current_jd - floor(current_jd - 0.5) - 0.5
+			var hours: float = fposmod(frac_day * 24.0 + 12.0, 24.0)
+			World.notify_time_changed(hours, int(current_jd))
+			World.notify_sun_direction(sun_dir)
 
 # ---------------------------------------------------------------------
 # Per-tick computation
