@@ -14,7 +14,9 @@ extends RefCounted
 ## (MerlLLMBrain.gd) can be swapped in: same tick() signature, different
 ## internals. The controller doesn't care how decisions get made.
 
-enum State { WANDER, INVESTIGATE_PLAYER, FLEEING, RESTING, OBSESSED }
+const Perception = preload("res://agents/Perception.gd")
+
+enum State { WANDER, INVESTIGATE_PLAYER, FLEEING, RESTING, OBSESSED, HIDING_FROM_PLANE }
 
 # Where the opossum is allowed to roam (soft centre + hard radius).
 var home_center: Vector3 = Vector3.ZERO
@@ -34,7 +36,12 @@ var _state: int = State.WANDER
 var _state_timer: float = 0.0
 var _current_target: Vector3 = Vector3.ZERO
 var _obsession_point: Vector3 = Vector3.ZERO
+var _obsession_id: String = ""           # memory id of the thing he's obsessed with
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
+# Optional memory handle — the controller injects this after init so
+# the brain can query what Merl has perceived rather than inventing
+# random positions. If null, we fall back to random wander targets.
+var memory = null
 
 func _init() -> void:
 	_rng.randomize()
@@ -54,9 +61,16 @@ func tick(self_pos: Vector3, player_pos: Vector3, delta: float, ground_y_at: Cal
 		player_dist = Vector2(self_pos.x - player_pos.x, self_pos.z - player_pos.z).length()
 
 	# --- Reactive transitions (highest priority) ---
+	# 1) Nearby loud plane → hide. Memory tells us if the plane is
+	#    perceived + how salient (distance-based).
+	if memory != null:
+		var plane_percept: Dictionary = memory.most_salient(Perception.PerceptKind.PLANE)
+		if plane_percept.size() > 0 and plane_percept.salience > 0.4 and _state != State.HIDING_FROM_PLANE:
+			_enter_hiding_from_plane(self_pos, plane_percept.position)
+
 	if player_dist < flee_distance:
 		_enter_fleeing(self_pos, player_pos)
-	elif _state != State.FLEEING and _state != State.OBSESSED and player_dist < investigate_approach_distance:
+	elif _state != State.FLEEING and _state != State.OBSESSED and _state != State.HIDING_FROM_PLANE and player_dist < investigate_approach_distance:
 		if _state != State.INVESTIGATE_PLAYER:
 			_enter_investigate(player_pos)
 
@@ -90,6 +104,12 @@ func tick(self_pos: Vector3, player_pos: Vector3, delta: float, ground_y_at: Cal
 			State.OBSESSED:
 				# Done obsessing — back to wandering.
 				_state = State.WANDER
+				_obsession_id = ""
+				_pick_wander_target(ground_y_at)
+				_state_timer = _rng.randf_range(wander_min_dwell, wander_max_dwell)
+			State.HIDING_FROM_PLANE:
+				# Plane presumably gone — emerge cautiously
+				_state = State.WANDER
 				_pick_wander_target(ground_y_at)
 				_state_timer = _rng.randf_range(wander_min_dwell, wander_max_dwell)
 
@@ -118,9 +138,18 @@ func tick(self_pos: Vector3, player_pos: Vector3, delta: float, ground_y_at: Cal
 			return _intent(self_pos, 0.0, "resting", false)
 		State.OBSESSED:
 			# Hang around the obsession point, circling with some drift.
+			# If the target is remembered via memory, keep its position
+			# updated in case it moves (e.g. the plane).
+			if memory != null and _obsession_id != "":
+				var items: Dictionary = memory.all_items()
+				if items.has(_obsession_id):
+					_obsession_point = items[_obsession_id].position
 			var ang: float = Time.get_ticks_msec() * 0.0005
 			var circle_offset: Vector3 = Vector3(sin(ang), 0.0, cos(ang)) * 2.5
 			return _intent(_obsession_point + circle_offset, 0.55, "obsessed", true)
+		State.HIDING_FROM_PLANE:
+			# Freeze in place, low. Don't move. Watch the sky.
+			return _intent(self_pos, 0.0, "hiding_from_plane", true)
 	return _intent(self_pos, 0.0, "idle", false)
 
 # ---------------------------------------------------------------------
@@ -141,16 +170,38 @@ func _enter_resting() -> void:
 func _enter_obsessed(self_pos: Vector3, ground_y_at: Callable) -> void:
 	_state = State.OBSESSED
 	_state_timer = _rng.randf_range(obsession_min_seconds, obsession_max_seconds)
-	# Pick a random point in home area to obsess over — could be a tree,
-	# a rock, a water puddle, or just an interesting patch of dirt. For
-	# now any random spot in the roam zone qualifies; a future hook can
-	# query TreeSystem / World for actual nearby objects.
+	_obsession_id = ""
+	# If memory is wired up, obsess over a REAL perceived object
+	# (not the player — that's handled by INVESTIGATE_PLAYER). Pick
+	# from trees / cabin / plane by salience.
+	if memory != null:
+		# Build a pool of non-player memories
+		var candidates: Array = []
+		for id in memory.all_items().keys():
+			var item: Dictionary = memory.all_items()[id]
+			if item.kind == Perception.PerceptKind.PLAYER:
+				continue
+			candidates.append({"id": id, "item": item})
+		if candidates.size() > 0:
+			var pick: Dictionary = candidates[_rng.randi() % candidates.size()]
+			_obsession_point = pick.item.position
+			_obsession_id = pick.id
+			if ground_y_at.is_valid():
+				_obsession_point.y = ground_y_at.call(_obsession_point.x, _obsession_point.z)
+			return
+	# Fallback — random spot in roam area.
 	var r: float = _rng.randf() * home_radius * 0.9
 	var a: float = _rng.randf() * TAU
 	var p: Vector3 = home_center + Vector3(cos(a) * r, 0.0, sin(a) * r)
 	if ground_y_at.is_valid():
 		p.y = ground_y_at.call(p.x, p.z)
 	_obsession_point = p
+
+func _enter_hiding_from_plane(self_pos: Vector3, plane_pos: Vector3) -> void:
+	_state = State.HIDING_FROM_PLANE
+	_state_timer = _rng.randf_range(5.0, 12.0)
+	# No target movement — he just freezes in place.
+	_current_target = self_pos
 
 func _pick_wander_target(ground_y_at: Callable = Callable()) -> void:
 	# Random point in home area, biased slightly toward centre so he

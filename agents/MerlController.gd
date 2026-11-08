@@ -4,15 +4,21 @@ extends CharacterBody3D
 ## just does physics, animation, and visual construction.
 
 const MerlBrain = preload("res://agents/MerlBrain.gd")
+const Perception = preload("res://agents/Perception.gd")
+const Memory = preload("res://agents/Memory.gd")
 
 @export var home_center: Vector3 = Vector3.ZERO
 @export var home_radius: float = 180.0
 @export var walk_speed: float = 2.4
 @export var turn_rate_deg_per_s: float = 180.0
 @export var gravity: float = 24.0
+@export var perception_scan_interval: float = 0.4   # seconds between full sense scans
 
 # Internal
 var _brain: Variant = null
+var _perception: Variant = null
+var _memory: Variant = null
+var _perception_timer: float = 0.0
 var _target_pos: Vector3 = Vector3.ZERO
 var _speed_mul: float = 0.0
 var _sniffing: bool = false
@@ -26,9 +32,12 @@ var _head_pivot: Node3D = null
 @onready var _terrain = _find_terrain()
 
 func _ready() -> void:
+	_perception = Perception.new()
+	_memory = Memory.new()
 	_brain = MerlBrain.new()
 	_brain.home_center = home_center
 	_brain.home_radius = home_radius
+	_brain.memory = _memory
 	_init_materials()
 	_build_visuals()
 	# Ground the spawn position via terrain query if available
@@ -40,6 +49,15 @@ func _physics_process(delta: float) -> void:
 		var p: Node3D = World.get_player()
 		if p != null:
 			player_pos = p.global_position
+
+	# Perception: scan at a fixed cadence (expensive); memory decays
+	# continuously so the brain sees staleness properly.
+	_perception_timer -= delta
+	var new_percepts: Array = []
+	if _perception_timer <= 0.0:
+		_perception_timer = perception_scan_interval
+		new_percepts = _perception.scan(global_position, -transform.basis.z, _scene_root())
+	_memory.update(delta, new_percepts)
 
 	var intent: Dictionary = _brain.tick(global_position, player_pos, delta,
 		Callable(self, "_ground_y_at"))
@@ -112,6 +130,12 @@ func _find_terrain() -> Node:
 			return n
 		n = n.get_parent()
 	return null
+
+func _scene_root() -> Node:
+	# Perception needs access to peer scene nodes (BushPlane, TreeSystem,
+	# OriginBase). They all live under TerrainGenerator — use that as
+	# the "root" for lookups.
+	return _terrain if _terrain != null else get_tree().current_scene
 
 func _ground_y_at(x: float, z: float) -> float:
 	if _terrain != null:
