@@ -15,11 +15,15 @@ class_name AstronomicalSystem
 @export var latitude: float = 45.0  # Observer latitude in degrees
 
 # Sun properties
-# Astronomical sizes & distances, scaled 1/1000 from real so that angular
-# dimensions match reality (sun ≈ 0.53°, moons ≈ 0.52°) while staying
-# well inside float32 precision. 1 Godot unit = 1 meter for gameplay;
-# celestial numbers are large because the sky really is that far away.
-@export var sun_size: float = 696_340.0            # real: 696,340 km → 696 km scaled
+# Celestials keep real angular diameters (sun ≈ 0.53°, moon ≈ 0.52°) —
+# exactly what you'd measure in the real sky — but at distances that
+# fit within a sane camera far plane so terrain depth-buffer precision
+# isn't wrecked. Real astronomical scale has the sun at 150 Mm, which
+# forces far = 2e8 on the camera and that destroys depth precision for
+# terrain at 1-m range. Angular size is the only thing a player can
+# actually perceive, so we preserve that and tuck celestials just
+# inside the camera frustum.
+@export var sun_size: float = 95.0                 # 0.53° at distance 20_500
 @export var sun_intensity_day: float = 1.5  # Max light intensity
 @export var sun_intensity_night: float = 0.0  # Min light intensity
 @export var sun_color_day: Color = Color(1.0, 0.98, 0.92)  # Daylight color
@@ -27,8 +31,8 @@ class_name AstronomicalSystem
 @export var ambient_day_intensity: float = 0.3  # Ambient light during day
 @export var ambient_night_intensity: float = 0.02  # Ambient light during night
 
-# Moon properties — real Earth–Moon proportions (angular size 0.52°)
-@export var primary_moon_size: float = 1_737.4     # real: 1,737.4 km → 1.74 km scaled
+# Moon properties — real angular size (0.52°)
+@export var primary_moon_size: float = 54.0        # 0.52° at distance 12_000
 @export var primary_moon_orbit_period: float = 27.3  # Days for full orbit (like Earth's moon)
 @export var primary_moon_phase_offset: float = 0.0  # Initial phase offset (0-1)
 @export var primary_moon_inclination: float = 5.1  # Orbit inclination in degrees
@@ -36,7 +40,7 @@ class_name AstronomicalSystem
 @export var primary_moon_intensity: float = 0.2  # Light intensity from moon
 
 # Secondary moon properties
-@export var secondary_moon_size: float = 750.0     # fictional smaller moon
+@export var secondary_moon_size: float = 32.0      # fictional, 0.42° at distance 8_500
 @export var secondary_moon_orbit_period: float = 43.6  # Days for full orbit (longer than primary)
 @export var secondary_moon_phase_offset: float = 0.5  # Initial phase offset (0-1)
 @export var secondary_moon_inclination: float = 12.3  # Orbit inclination in degrees
@@ -79,10 +83,12 @@ var _sun_offset: Vector3 = Vector3.ZERO
 var _primary_moon_offset: Vector3 = Vector3.ZERO
 var _secondary_moon_offset: Vector3 = Vector3.ZERO
 
-# Orbit calculation variables — real-ish astronomical radii, scaled 1/1000.
-var sun_orbit_radius: float = 149_600_000.0        # real: 1 AU = 149.6 Mm → 149,600 km scaled
-var primary_moon_orbit_radius: float = 384_400.0   # real: 384,400 km → 384 km scaled
-var secondary_moon_orbit_radius: float = 200_000.0 # fictional closer moon
+# Orbit radii chosen so angular diameters match real life while every
+# body stays well within the camera far plane. All anchored to player
+# each frame (see _anchor_celestials_to_player) so there's no parallax.
+var sun_orbit_radius: float = 20_500.0             # sun ≈ 0.53° from ground
+var primary_moon_orbit_radius: float = 12_000.0    # moon ≈ 0.52°
+var secondary_moon_orbit_radius: float = 8_500.0   # fictional closer moon
 
 func _ready():
 	if typeof(World) != TYPE_NIL:

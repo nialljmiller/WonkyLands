@@ -23,5 +23,5 @@ mesh = SubResource("CapsuleMesh_player")
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, 0)
 current = true
-near = 0.5
-far = 2.0e8
+near = 0.1
+far = 50000.0
