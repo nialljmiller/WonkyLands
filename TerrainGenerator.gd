@@ -231,15 +231,23 @@ func get_ground_height(position: Vector3):
 
 # Initialize astronomical system
 func initialize_astronomical_system():
-	if enable_astronomical_system:
-		# Create astronomical system node
-		astronomical_system = load("res://AstronomicalSystem.gd").new()
-		astronomical_system.name = "AstronomicalSystem"
-		astronomical_system.day_length = day_length
-		astronomical_system.start_time = start_time
-		
-		# Add to scene
-		add_child(astronomical_system)
+	if not enable_astronomical_system:
+		return
+	# Physics engine — accurate sun + moon positions, Keplerian orbits,
+	# observer on an Earth-like planet. Never renders anything.
+	astronomical_system = load("res://astronomy/AstronomyEngine.gd").new()
+	astronomical_system.name = "AstronomyEngine"
+	# Start-hour from the legacy TerrainGenerator export, for compat.
+	astronomical_system.start_hour_ut = start_time
+	add_child(astronomical_system)
+
+	# Sky renderer — the visual half. Reads engine state each frame
+	# and anchors a sky dome to the player with properly positioned
+	# sun and moons at correct apparent angular sizes.
+	var sky = load("res://sky/SkyRenderer.gd").new()
+	sky.name = "SkyRenderer"
+	sky.engine = astronomical_system
+	add_child(sky)
 
 func initialize_water_system():
 	# Create water system node
