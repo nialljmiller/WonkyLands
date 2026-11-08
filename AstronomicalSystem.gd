@@ -570,7 +570,9 @@ func calculate_primary_moon_position():
 	var moon_visibility = clamp(sin(moon_altitude) + 0.2, 0.0, 1.0)
 	# Hide the moon when below the horizon so we don't render a dark
 	# disc clipping through the sky dome.
-	primary_moon_mesh.visible = moon_altitude > -0.03
+	# Hide moon entirely when the sun is noticeably up — the partial-
+	# alpha dark side still reads as a visible dark disc otherwise.
+	primary_moon_mesh.visible = (moon_altitude > -0.03) and (sin(sun_altitude) < 0.12)
 
 	# Phase factor: 1 when sun and moon are opposite (full moon → bright),
 	# 0 when they're aligned (new moon → dark). Earlier version used
@@ -633,7 +635,7 @@ func calculate_secondary_moon_position():
 	secondary_moon_light.look_at_from_position(_secondary_moon_offset, Vector3.ZERO, Vector3.UP)
 	var moon_altitude = calculate_altitude(_secondary_moon_offset)
 	var moon_visibility = clamp(sin(moon_altitude) + 0.2, 0.0, 1.0)
-	secondary_moon_mesh.visible = moon_altitude > -0.03
+	secondary_moon_mesh.visible = (moon_altitude > -0.03) and (sin(sun_altitude) < 0.12)
 
 	# Phase factor: 1 when opposite sun (full moon), 0 when aligned (new moon).
 	var phase_factor = (1.0 - cos(moon_to_sun_angle)) / 2.0
