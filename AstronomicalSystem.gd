@@ -208,23 +208,49 @@ func create_sun():
 	sun_light.directional_shadow_split_2 = 0.2
 	sun_light.directional_shadow_split_3 = 0.5
 	
-	# Create sun visual mesh
-	var sun_material = StandardMaterial3D.new()
-	sun_material.emission_enabled = true
-	sun_material.emission = sun_color_day
-	sun_material.emission_energy = 5.0
-	sun_material.billboard_mode = StandardMaterial3D.BILLBOARD_ENABLED
-	
+	# Sun visual: use a dedicated unshaded + emissive shader so the sun
+	# always renders bright regardless of scene lighting, and doesn't
+	# cast its own shadow onto itself (which was the "black sun-shape
+	# disc" the user saw with the previous billboarded StandardMaterial).
+	var sun_shader := Shader.new()
+	sun_shader.code = """
+shader_type spatial;
+// cull_back is default — don't render the inside of the sphere.
+// At 150 Mm distance float32 depth precision across the sun's 696 km
+// radius isn't enough to reliably sort front vs back face, so showing
+// both causes artifacts.
+render_mode unshaded, depth_draw_opaque;
+
+uniform vec4 sun_color : source_color = vec4(1.0, 0.95, 0.85, 1.0);
+uniform float brightness = 8.0;
+
+void fragment() {
+	ALBEDO = vec3(0.0);
+	EMISSION = sun_color.rgb * brightness;
+	ALPHA = 1.0;
+}
+"""
+	var sun_material := ShaderMaterial.new()
+	sun_material.shader = sun_shader
+	sun_material.set_shader_parameter("sun_color", sun_color_day)
+
 	var sun_sphere = SphereMesh.new()
 	sun_sphere.radius = sun_size
 	sun_sphere.height = sun_size * 2.0
-	
+	sun_sphere.radial_segments = 24
+	sun_sphere.rings = 12
+
 	sun_mesh = MeshInstance3D.new()
 	sun_mesh.name = "SunMesh"
 	sun_mesh.mesh = sun_sphere
 	sun_mesh.material_override = sun_material
-	
-	# Add to scene hierarchy
+	# Don't cast shadows from the celestial itself — the directional
+	# light already represents sunlight.
+	sun_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# Don't apply a world environment to the sun (keeps atmospheric
+	# fog from eating its colour at distance).
+	sun_mesh.extra_cull_margin = sun_size
+
 	add_child(sun_light)
 	add_child(sun_mesh)
 
@@ -690,10 +716,11 @@ func update_sky_colors():
 	sun_light.light_color = sun_color_sunset.lerp(sun_color_day, sun_transition)
 	sun_light.light_energy = lerp(0.0, sun_intensity_day, sun_transition)
 
-	# Update sun mesh material
-	var sun_material = sun_mesh.material_override
-	sun_material.emission = sun_light.light_color
-	sun_material.emission_energy = lerp(3.0, 8.0, sun_transition)
+	# Update sun shader uniforms (shader-based sun from create_sun).
+	var sun_mat := sun_mesh.material_override as ShaderMaterial
+	if sun_mat != null:
+		sun_mat.set_shader_parameter("sun_color", sun_light.light_color)
+		sun_mat.set_shader_parameter("brightness", lerp(3.0, 10.0, sun_transition))
 
 	# Make sun visible only when above horizon
 	sun_mesh.visible = sun_altitude > -0.05
