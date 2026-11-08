@@ -24,7 +24,7 @@ class_name AstronomicalSystem
 @export var ambient_night_intensity: float = 0.02  # Ambient light during night
 
 # Moon properties
-@export var primary_moon_size: float = 1000.0  # Visual size of primary moon
+@export var primary_moon_size: float = 2500.0  # Visual size of primary moon — cinematic scale
 @export var primary_moon_orbit_period: float = 27.3  # Days for full orbit (like Earth's moon)
 @export var primary_moon_phase_offset: float = 0.0  # Initial phase offset (0-1)
 @export var primary_moon_inclination: float = 5.1  # Orbit inclination in degrees
@@ -32,7 +32,7 @@ class_name AstronomicalSystem
 @export var primary_moon_intensity: float = 0.2  # Light intensity from moon
 
 # Secondary moon properties
-@export var secondary_moon_size: float = 600.0  # Visual size of secondary moon
+@export var secondary_moon_size: float = 1500.0  # Visual size of secondary moon
 @export var secondary_moon_orbit_period: float = 43.6  # Days for full orbit (longer than primary)
 @export var secondary_moon_phase_offset: float = 0.5  # Initial phase offset (0-1)
 @export var secondary_moon_inclination: float = 12.3  # Orbit inclination in degrees
@@ -66,6 +66,14 @@ var secondary_moon_material: ShaderMaterial
 var sky_environment: WorldEnvironment
 var star_multimesh_node: MultiMeshInstance3D = null
 var star_material: ShaderMaterial = null
+
+# Orbital offsets for each celestial body (direction × orbit_radius),
+# computed per frame. The mesh's world position each frame is this
+# offset plus the player's world position — otherwise flying around
+# shifts celestials with parallax and they feel close.
+var _sun_offset: Vector3 = Vector3.ZERO
+var _primary_moon_offset: Vector3 = Vector3.ZERO
+var _secondary_moon_offset: Vector3 = Vector3.ZERO
 
 # Orbit calculation variables
 var sun_orbit_radius: float = 100000.0  # Arbitrary large value for skybox positioning
@@ -439,13 +447,31 @@ func random_point_on_sphere(in_galactic_plane: bool) -> Vector3:
 func update_celestial_positions(delta):
 	# Calculate sun position based on time and axial tilt
 	calculate_sun_position()
-	
+
 	# Calculate moon positions
 	calculate_primary_moon_position()
 	calculate_secondary_moon_position()
-	
+
+	# Anchor celestials to the player so they don't parallax when flying.
+	_anchor_celestials_to_player()
+
 	# Update sky environment colors based on sun position
 	update_sky_colors()
+
+func _anchor_celestials_to_player() -> void:
+	var player_pos: Vector3 = Vector3.ZERO
+	if typeof(World) != TYPE_NIL:
+		var p = World.get_player()
+		if p != null:
+			player_pos = p.global_position
+	if sun_mesh != null:
+		sun_mesh.global_position = _sun_offset + player_pos
+	if primary_moon_mesh != null:
+		primary_moon_mesh.global_position = _primary_moon_offset + player_pos
+	if secondary_moon_mesh != null:
+		secondary_moon_mesh.global_position = _secondary_moon_offset + player_pos
+	if star_multimesh_node != null:
+		star_multimesh_node.global_position = player_pos
 
 func calculate_sun_position():
 	# Calculate solar position using astronomical formulae
@@ -472,14 +498,15 @@ func calculate_sun_position():
 	if hour_angle > 0:
 		sun_azimuth = TAU - sun_azimuth
 	
-	# Convert altitude and azimuth to 3D position
-	var sun_pos = spherical_to_cartesian(sun_azimuth, sun_altitude, sun_orbit_radius)
-	
-	# Update sun position
-	sun_mesh.position = sun_pos
-	
-	# Point sun light in the correct direction
-	sun_light.look_at_from_position(sun_pos, Vector3.ZERO, Vector3.UP)
+	# Convert altitude and azimuth to 3D position (relative to player;
+	# actual world position is set in _anchor_celestials_to_player).
+	_sun_offset = spherical_to_cartesian(sun_azimuth, sun_altitude, sun_orbit_radius)
+	sun_mesh.position = _sun_offset
+
+	# Point sun light in the correct direction (toward origin — the
+	# direction vector for a directional light is what matters, not the
+	# exact position).
+	sun_light.look_at_from_position(_sun_offset, Vector3.ZERO, Vector3.UP)
 
 func calculate_primary_moon_position():
 	# Calculate moon orbital position (phase)
@@ -498,17 +525,15 @@ func calculate_primary_moon_position():
 	# Apply inclination
 	var moon_y = sin(moon_angle) * sin(moon_inclination_rad) * primary_moon_orbit_radius
 	
-	# Position the moon
-	primary_moon_mesh.position = Vector3(moon_x, moon_y, moon_z)
-	
-	# Calculate moon phase based on angle between sun and moon
-	var moon_to_sun_angle = angle_between_positions(primary_moon_mesh.position, sun_mesh.position)
-	
-	# Point moon light in the correct direction
-	primary_moon_light.look_at_from_position(primary_moon_mesh.position, Vector3.ZERO, Vector3.UP)
+	# Store orbital offset — mesh world position is set in anchor step.
+	_primary_moon_offset = Vector3(moon_x, moon_y, moon_z)
+	primary_moon_mesh.position = _primary_moon_offset
 
-	# Update moon visibility based on its altitude
-	var moon_altitude = calculate_altitude(primary_moon_mesh.position)
+	# Phase + altitude are computed from the orbital offset vectors
+	# (relative to player horizon), not the world positions.
+	var moon_to_sun_angle = angle_between_positions(_primary_moon_offset, _sun_offset)
+	primary_moon_light.look_at_from_position(_primary_moon_offset, Vector3.ZERO, Vector3.UP)
+	var moon_altitude = calculate_altitude(_primary_moon_offset)
 	var moon_visibility = clamp(sin(moon_altitude) + 0.2, 0.0, 1.0)
 	# Hide the moon when below the horizon so we don't render a dark
 	# disc clipping through the sky dome.
@@ -521,7 +546,9 @@ func calculate_primary_moon_position():
 	# Daytime attenuation. At high sun altitude, the sky is very bright
 	# and the moon washes out; fade its emission so it doesn't read as
 	# a shadow on the sky.
-	var day_dim = 1.0 - clamp(sin(sun_altitude) * 1.6, 0.0, 0.85)
+	# Steep fade: moon practically invisible once the sun clears ~10° of
+	# altitude, full brightness around and below the horizon.
+	var day_dim = 1.0 - clamp(sin(sun_altitude) * 4.0, 0.0, 0.98)
 	primary_moon_light.light_energy = primary_moon_intensity * phase_factor * moon_visibility * day_dim
 
 	if primary_moon_material:
@@ -567,23 +594,19 @@ func calculate_secondary_moon_position():
 	var moon_inclination_rad = deg_to_rad(secondary_moon_inclination)
 	var moon_y = sin(true_anomaly) * sin(moon_inclination_rad) * distance
 	
-	# Position the moon
-	secondary_moon_mesh.position = Vector3(moon_x, moon_y, moon_z)
-	
-	# Calculate moon phase
-	var moon_to_sun_angle = angle_between_positions(secondary_moon_mesh.position, sun_mesh.position)
-
-	# Point moon light
-	secondary_moon_light.look_at_from_position(secondary_moon_mesh.position, Vector3.ZERO, Vector3.UP)
-
-	# Update moon visibility based on its altitude
-	var moon_altitude = calculate_altitude(secondary_moon_mesh.position)
+	_secondary_moon_offset = Vector3(moon_x, moon_y, moon_z)
+	secondary_moon_mesh.position = _secondary_moon_offset
+	var moon_to_sun_angle = angle_between_positions(_secondary_moon_offset, _sun_offset)
+	secondary_moon_light.look_at_from_position(_secondary_moon_offset, Vector3.ZERO, Vector3.UP)
+	var moon_altitude = calculate_altitude(_secondary_moon_offset)
 	var moon_visibility = clamp(sin(moon_altitude) + 0.2, 0.0, 1.0)
 	secondary_moon_mesh.visible = moon_altitude > -0.03
 
 	# Phase factor: 1 when opposite sun (full moon), 0 when aligned (new moon).
 	var phase_factor = (1.0 - cos(moon_to_sun_angle)) / 2.0
-	var day_dim = 1.0 - clamp(sin(sun_altitude) * 1.6, 0.0, 0.85)
+	# Steep fade: moon practically invisible once the sun clears ~10° of
+	# altitude, full brightness around and below the horizon.
+	var day_dim = 1.0 - clamp(sin(sun_altitude) * 4.0, 0.0, 0.98)
 	secondary_moon_light.light_energy = secondary_moon_intensity * phase_factor * moon_visibility * day_dim
 
 	if secondary_moon_material:
