@@ -29,8 +29,16 @@ const TreeSpecies = preload("res://trees/TreeSpecies.gd")
 var species_list: Array = []  # of TreeSpecies instances
 var tree_positions: Dictionary = {}            # Vector2 -> Array[Vector3] (near detail)
 var far_tree_chunks: Dictionary = {}           # Vector2 -> Node3D (impostor root per chunk)
-var active_trees: Array = []
 var terrain_generator: Node = null
+
+# Per-species template cache. First time a species is used we instantiate
+# its full procedural tree, walk the children, and record:
+#   _species_parts_cache[name] = Array of {mesh, material, xform}
+#   _species_collisions_cache[name] = Array of {shape, xform}
+# After that, individual tree placement just appends transforms to shared
+# MultiMeshes and a shared StaticBody3D — no per-tree node tree.
+var _species_parts_cache: Dictionary = {}
+var _species_collisions_cache: Dictionary = {}
 
 const BIOME_DENSITY := {
 	"TEMPERATE_FOREST":   1.5,
@@ -158,6 +166,12 @@ func place_trees_in_chunk(chunk_node: Node3D, chunk_pos: Vector2, biome_type: in
 
 	tree_positions[chunk_pos] = []
 	var placed: Array[Vector3] = []
+	# Per-species chunk-local transforms. Each entry is the per-tree
+	# transform (translation + yaw + scale) in chunk-local space; the
+	# part offsets inside the species template are multiplied in at
+	# batch time.
+	var by_species: Dictionary = {}
+	var chunk_origin := chunk_node.position
 	var attempts: int = 0
 	var max_attempts: int = num_trees * 5
 
@@ -199,27 +213,94 @@ func place_trees_in_chunk(chunk_node: Node3D, chunk_pos: Vector2, biome_type: in
 		tree_positions[chunk_pos].append(world_pos)
 
 		var species = candidates[randi() % candidates.size()]
-		_spawn_tree(species, world_pos, chunk_node)
+		var tree_scale: float = 1.0 + randf_range(-tree_scale_variation, tree_scale_variation)
+		var yaw_rad: float = deg_to_rad(randf_range(0.0, tree_rotation_variation))
+		var local_pos := Vector3(
+			world_x - chunk_origin.x,
+			terrain_height - chunk_origin.y + 0.01,
+			world_z - chunk_origin.z,
+		)
+		var basis := Basis.from_euler(Vector3(0.0, yaw_rad, 0.0)).scaled(Vector3.ONE * tree_scale)
+		var tree_xform := Transform3D(basis, local_pos)
+		if not by_species.has(species):
+			by_species[species] = []
+		by_species[species].append(tree_xform)
+
+	if not by_species.is_empty():
+		_attach_near_ring_batch(chunk_node, by_species)
 
 	if placed.size() > 0:
 		print("Placed ", placed.size(), " ", biome_name, " trees in chunk ", chunk_pos)
 
-func _spawn_tree(species, world_position: Vector3, chunk_node: Node3D) -> void:
-	var tree: Node3D = species.build_tree()
-	if tree == null:
-		return
-	var tree_scale: float = 1.0 + randf_range(-tree_scale_variation, tree_scale_variation)
-	tree.scale = Vector3.ONE * tree_scale
-	tree.rotation_degrees.y = randf_range(0.0, tree_rotation_variation)
+# Builds one MultiMeshInstance3D per (species, part) and a single
+# StaticBody3D holding every tree's collision shapes for this chunk.
+# Replaces the old one-Node3D-tree-per-tree layout — far fewer scene
+# nodes, far fewer draw calls, far fewer physics bodies.
+func _attach_near_ring_batch(chunk_node: Node3D, by_species: Dictionary) -> void:
+	var collision_body: StaticBody3D = null
+	for species in by_species:
+		var transforms: Array = by_species[species]
+		if transforms.is_empty():
+			continue
+		var tpl: Dictionary = _get_species_template(species)
+		var parts: Array = tpl.parts
+		var collisions: Array = tpl.collisions
 
-	var chunk_origin := chunk_node.position
-	tree.position = Vector3(
-		world_position.x - chunk_origin.x,
-		world_position.y - chunk_origin.y + 0.01,
-		world_position.z - chunk_origin.z,
-	)
-	chunk_node.add_child(tree)
-	active_trees.append(tree)
+		for part in parts:
+			var mm := MultiMesh.new()
+			mm.transform_format = MultiMesh.TRANSFORM_3D
+			mm.mesh = part.mesh
+			mm.instance_count = transforms.size()
+			var part_xform: Transform3D = part.xform
+			for i in range(transforms.size()):
+				mm.set_instance_transform(i, transforms[i] * part_xform)
+			var mmi := MultiMeshInstance3D.new()
+			mmi.multimesh = mm
+			if part.material != null:
+				mmi.material_override = part.material
+			chunk_node.add_child(mmi)
+
+		if collisions.size() > 0:
+			if collision_body == null:
+				collision_body = StaticBody3D.new()
+				collision_body.name = "TreeCollisions"
+				chunk_node.add_child(collision_body)
+			for xform in transforms:
+				for c in collisions:
+					var cs := CollisionShape3D.new()
+					cs.shape = c.shape
+					cs.transform = xform * c.xform
+					collision_body.add_child(cs)
+
+# Instantiates a species' template ONCE and extracts its parts +
+# collision shapes. Subsequent placements of the same species use the
+# cached data — no further build_tree() calls.
+func _get_species_template(species) -> Dictionary:
+	var sname: String = species.species_name
+	if _species_parts_cache.has(sname):
+		return {"parts": _species_parts_cache[sname], "collisions": _species_collisions_cache[sname]}
+	var parts: Array = []
+	var collisions: Array = []
+	var template: Node3D = species.build_tree()
+	if template != null:
+		_walk_template(template, Transform3D.IDENTITY, parts, collisions)
+		template.free()
+	_species_parts_cache[sname] = parts
+	_species_collisions_cache[sname] = collisions
+	return {"parts": parts, "collisions": collisions}
+
+static func _walk_template(node: Node, accum: Transform3D, parts: Array, collisions: Array) -> void:
+	var here: Transform3D = accum
+	if node is Node3D:
+		here = accum * (node as Node3D).transform
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		parts.append({"mesh": mi.mesh, "material": mi.material_override, "xform": here})
+	elif node is CollisionShape3D:
+		var cs := node as CollisionShape3D
+		collisions.append({"shape": cs.shape, "xform": here})
+	for c in node.get_children():
+		_walk_template(c, here, parts, collisions)
 
 # ---------------------------------------------------------------------
 # Far-ring placement — impostor trees via MultiMeshInstance3D.
