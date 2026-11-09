@@ -48,6 +48,15 @@ var _pending_near_placements: Array = []  # Array of {pos: Vector2, biome: int}
 # Analogous queue for the far-ring impostor chunks.
 var _pending_far_placements: Array = []   # Array of {pos: Vector2, biome: int, chunk_size: int}
 
+# Which chunk the player is currently standing in. Only this chunk gets
+# per-tree collision built; everyone else is render-only (fast). The
+# plane flies above the canopy and the player on foot only touches
+# trees in the chunk they're in.
+var _collision_chunk: Vector2 = Vector2(999999, 999999)
+# Per-chunk cache of tree data so we can add/drop collision lazily when
+# the player crosses chunk boundaries, without rebuilding the MMIs.
+var _chunk_trees: Dictionary = {}  # Vector2 -> {transforms_by_species: Dict, origin: Vector3}
+
 const BIOME_DENSITY := {
 	"TEMPERATE_FOREST":   1.5,
 	"DESERT":             0.2,
@@ -63,17 +72,17 @@ func _ready() -> void:
 	_discover_species()
 
 func _process(_delta: float) -> void:
-	# One chunk per frame — placement work (MultiMesh build + 100+
-	# CollisionShape3D nodes) is the single biggest source of streaming
-	# hitches, so we spread it.
-	if _pending_near_placements.size() > 0:
+	# A couple of chunks per frame — MultiMesh build is cheap, the
+	# CollisionShape3Ds were the heavy part, and only the collision
+	# chunk builds those now.
+	var budget: int = 2
+	while budget > 0 and _pending_near_placements.size() > 0:
 		var job: Dictionary = _pending_near_placements.pop_front()
 		var cp: Vector2 = job.pos
-		# Guard: by the time we dequeue, the chunk may have rolled out
-		# of view again, or already been placed through another path.
 		if not near_tree_chunks.has(cp):
 			place_trees_in_chunk(cp, job.biome)
-	elif _pending_far_placements.size() > 0:
+			budget -= 1
+	if budget > 0 and _pending_far_placements.size() > 0:
 		var job2: Dictionary = _pending_far_placements.pop_front()
 		if not far_tree_chunks.has(job2.pos):
 			place_far_trees_in_chunk(job2.pos, job2.biome, job2.chunk_size)
@@ -120,6 +129,10 @@ func update_tree_chunks(player_pos: Vector3, view_distance: int, chunk_size: int
 	var center_x: int = int(floor(player_pos.x / chunk_size))
 	var center_z: int = int(floor(player_pos.z / chunk_size))
 	var far_vd: int = max(view_distance, tree_far_view_distance)
+	var new_collision_chunk := Vector2(center_x, center_z)
+	if new_collision_chunk != _collision_chunk:
+		_migrate_collision(_collision_chunk, new_collision_chunk)
+		_collision_chunk = new_collision_chunk
 
 	var keep_near: Dictionary = {}
 	var keep_far: Dictionary = {}
@@ -181,6 +194,7 @@ func _is_queued_far(pos: Vector2) -> bool:
 
 func remove_trees_in_chunk(chunk_pos: Vector2) -> void:
 	tree_positions.erase(chunk_pos)
+	_chunk_trees.erase(chunk_pos)
 	var root = near_tree_chunks.get(chunk_pos, null)
 	if root != null and is_instance_valid(root):
 		root.queue_free()
@@ -278,27 +292,29 @@ func place_trees_in_chunk(chunk_pos: Vector2, biome_type: int) -> void:
 	root.name = "TreeChunk_%d_%d" % [chunk_pos.x, chunk_pos.y]
 	root.position = chunk_origin
 	if not by_species.is_empty():
-		_attach_near_ring_batch(root, by_species)
+		_build_render_batch(root, by_species)
 	add_child(root)
 	near_tree_chunks[chunk_pos] = root
+	_chunk_trees[chunk_pos] = {"transforms_by_species": by_species, "origin": chunk_origin}
+	# Only build collision for the chunk the player is actually in.
+	# Flying overhead (the main use case) doesn't need it, and walking
+	# never leaves the current chunk between steps.
+	if chunk_pos == _collision_chunk and not by_species.is_empty():
+		_build_collision_batch(root, by_species)
 
 	if placed.size() > 0:
 		print("Placed ", placed.size(), " ", biome_name, " trees in chunk ", chunk_pos)
 
-# Builds one MultiMeshInstance3D per (species, part) and a single
-# StaticBody3D holding every tree's collision shapes for this chunk.
-# Replaces the old one-Node3D-tree-per-tree layout — far fewer scene
-# nodes, far fewer draw calls, far fewer physics bodies.
-func _attach_near_ring_batch(chunk_node: Node3D, by_species: Dictionary) -> void:
-	var collision_body: StaticBody3D = null
+# Build the render-only payload (MultiMeshInstance3Ds). Fast — no
+# physics setup, no per-tree node overhead. Called for every placed
+# chunk regardless of collision status.
+func _build_render_batch(chunk_node: Node3D, by_species: Dictionary) -> void:
 	for species in by_species:
 		var transforms: Array = by_species[species]
 		if transforms.is_empty():
 			continue
 		var tpl: Dictionary = _get_species_template(species)
 		var parts: Array = tpl.parts
-		var collisions: Array = tpl.collisions
-
 		for part in parts:
 			var mm := MultiMesh.new()
 			mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -313,17 +329,46 @@ func _attach_near_ring_batch(chunk_node: Node3D, by_species: Dictionary) -> void
 				mmi.material_override = part.material
 			chunk_node.add_child(mmi)
 
-		if collisions.size() > 0:
-			if collision_body == null:
-				collision_body = StaticBody3D.new()
-				collision_body.name = "TreeCollisions"
-				chunk_node.add_child(collision_body)
-			for xform in transforms:
-				for c in collisions:
-					var cs := CollisionShape3D.new()
-					cs.shape = c.shape
-					cs.transform = xform * c.xform
-					collision_body.add_child(cs)
+# Build the per-tree CollisionShape3Ds — only for the chunk the player
+# is in. If the chunk already has a TreeCollisions body, this is a
+# no-op (we assume it's already built correctly).
+func _build_collision_batch(chunk_node: Node3D, by_species: Dictionary) -> void:
+	if chunk_node.get_node_or_null("TreeCollisions") != null:
+		return
+	var collision_body: StaticBody3D = null
+	for species in by_species:
+		var transforms: Array = by_species[species]
+		if transforms.is_empty():
+			continue
+		var tpl: Dictionary = _get_species_template(species)
+		var collisions: Array = tpl.collisions
+		if collisions.is_empty():
+			continue
+		if collision_body == null:
+			collision_body = StaticBody3D.new()
+			collision_body.name = "TreeCollisions"
+			chunk_node.add_child(collision_body)
+		for xform in transforms:
+			for c in collisions:
+				var cs := CollisionShape3D.new()
+				cs.shape = c.shape
+				cs.transform = xform * c.xform
+				collision_body.add_child(cs)
+
+# Called when the player's current chunk changes. Removes collision from
+# the previous chunk (if it was built) and adds collision to the new one.
+func _migrate_collision(old_pos: Vector2, new_pos: Vector2) -> void:
+	# Drop the old chunk's collision body, if present.
+	var old_root = near_tree_chunks.get(old_pos, null)
+	if old_root != null and is_instance_valid(old_root):
+		var old_body = old_root.get_node_or_null("TreeCollisions")
+		if old_body != null:
+			old_body.queue_free()
+	# Add collision for the new chunk, if it's placed already.
+	var new_root = near_tree_chunks.get(new_pos, null)
+	if new_root != null and is_instance_valid(new_root) and _chunk_trees.has(new_pos):
+		var data: Dictionary = _chunk_trees[new_pos]
+		_build_collision_batch(new_root, data.transforms_by_species)
 
 # Instantiates a species' template ONCE and extracts its parts +
 # collision shapes. Subsequent placements of the same species use the
