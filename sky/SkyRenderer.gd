@@ -193,7 +193,15 @@ func _update_moon_appearance(mat: ShaderMaterial, light: DirectionalLight3D, moo
 		visibility = 0.0
 	mat.set_shader_parameter("visibility", visibility)
 	light.light_color = color
-	light.light_energy = peak_energy * phase * clampf(-sun_alt_sin, 0.0, 1.0)
+	var energy: float = peak_energy * phase * clampf(-sun_alt_sin, 0.0, 1.0)
+	light.light_energy = energy
+	# Toggle the light off entirely when its energy is effectively zero —
+	# saves a per-frame lighting pass for a light contributing nothing.
+	# _update_position already handles the below-horizon case; this also
+	# catches "phase too low" and "sun up" (both common during the day).
+	var should_light: bool = energy > 0.002 and moon_dir.y > -0.03
+	if light.visible != should_light:
+		light.visible = should_light
 
 # ---------------------------------------------------------------------
 # Sky colors driven by sun altitude
