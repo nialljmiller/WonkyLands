@@ -115,7 +115,7 @@ func update_tree_chunks(player_pos: Vector3, view_distance: int, chunk_size: int
 
 	# Unload near trees that rolled out of view.
 	var to_remove_near: Array = []
-	for chunk_pos in tree_positions.keys():
+	for chunk_pos in tree_positions:
 		if not keep_near.has(chunk_pos):
 			to_remove_near.append(chunk_pos)
 	for chunk_pos in to_remove_near:
@@ -123,7 +123,7 @@ func update_tree_chunks(player_pos: Vector3, view_distance: int, chunk_size: int
 
 	# Unload far impostor chunks that rolled out.
 	var to_remove_far: Array = []
-	for chunk_pos in far_tree_chunks.keys():
+	for chunk_pos in far_tree_chunks:
 		if not keep_far.has(chunk_pos):
 			to_remove_far.append(chunk_pos)
 	for chunk_pos in to_remove_far:
@@ -285,7 +285,7 @@ func place_far_trees_in_chunk(chunk_pos: Vector2, biome_type: int, chunk_size: i
 	# Build the chunk's impostor root with one MultiMeshInstance3D per species.
 	var root := Node3D.new()
 	root.name = "FarTrees_%d_%d" % [chunk_pos.x, chunk_pos.y]
-	for sname in by_species.keys():
+	for sname in by_species:
 		var entry = by_species[sname]
 		var species = entry.species
 		var transforms: Array = entry.transforms

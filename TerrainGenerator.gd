@@ -393,7 +393,7 @@ func update_terrain_chunks(player_pos: Vector3):
 
 	# Unload chunks that rolled out of view — but never unload permanent ones.
 	var to_remove: Array = []
-	for cp in loaded_chunks.keys():
+	for cp in loaded_chunks:
 		if not chunks_to_keep.has(cp) and not _is_permanent_chunk(cp):
 			to_remove.append(cp)
 	for cp in to_remove:

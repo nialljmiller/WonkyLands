@@ -252,8 +252,9 @@ func _enter_obsessed(self_pos: Vector3, ground_y_at: Callable) -> void:
 	if memory != null:
 		# Build a pool of non-player memories
 		var candidates: Array = []
-		for id in memory.all_items().keys():
-			var item: Dictionary = memory.all_items()[id]
+		var items_ref: Dictionary = memory.all_items()
+		for id in items_ref:
+			var item: Dictionary = items_ref[id]
 			if item.kind == Perception.PerceptKind.PLAYER:
 				continue
 			candidates.append({"id": id, "item": item})

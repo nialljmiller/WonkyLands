@@ -104,7 +104,7 @@ func scan(owner_pos: Vector3, owner_fwd_xz: Vector3, scene_root: Node) -> Array:
 		# Precompute chunk-level cutoff² (sight + chunk half-diagonal).
 		var chunk_diag: float = half_chunk * sqrt(2.0)
 		var chunk_cutoff_sq: float = (sight_radius + chunk_diag) * (sight_radius + chunk_diag)
-		for chunk_pos in tree_sys.tree_positions.keys():
+		for chunk_pos in tree_sys.tree_positions:
 			var cx: float = chunk_pos.x * chunk_size + half_chunk
 			var cz: float = chunk_pos.y * chunk_size + half_chunk
 			var cdsq: float = (owner_pos.x - cx) * (owner_pos.x - cx) + (owner_pos.z - cz) * (owner_pos.z - cz)

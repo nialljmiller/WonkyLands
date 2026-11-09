@@ -422,7 +422,7 @@ func update_water_chunks(player_pos: Vector3, view_distance: int, chunk_size: in
 	
 	# Remove chunks outside view distance
 	var chunks_to_remove = []
-	for chunk_pos in water_chunks.keys():
+	for chunk_pos in water_chunks:
 		if not chunks_to_keep.has(chunk_pos):
 			chunks_to_remove.append(chunk_pos)
 	
