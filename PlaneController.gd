@@ -149,6 +149,17 @@ var original_camera_transform: Transform3D = Transform3D.IDENTITY
 var stored_player_visibility: bool = true
 var disabled_colliders: Array[CollisionShape3D] = []
 
+# Throttled ground-height sample for ground effect. Terrain height
+# changes slowly as the plane moves; resampling at ~10 Hz is plenty.
+var _ground_effect_h_cached: float = 0.0
+var _ground_effect_h_accum: float = 999.0
+
+# Visual deflection state — skip writing unchanged node rotations.
+var _vis_last_pitch: float = 1e9
+var _vis_last_yaw: float = 1e9
+var _vis_last_roll: float = 1e9
+var _vis_last_flap: float = 1e9
+
 # Materials (initialised in _init_materials).
 var _mat_fuselage: StandardMaterial3D
 var _mat_wing: StandardMaterial3D
@@ -215,7 +226,11 @@ func _update_flaps(delta: float) -> void:
 func _apply_flight_physics(delta: float) -> void:
 	var basis: Basis = global_transform.basis
 	var v_world: Vector3 = velocity
-	var v_local: Vector3 = basis.inverse() * v_world
+	# For an orthonormal rotation basis, inverse == transpose; Godot's
+	# Basis.inverse() is general-purpose and does a full 3x3 inverse —
+	# transposed() is cheaper and correct here (character bodies don't
+	# scale their basis).
+	var v_local: Vector3 = basis.transposed() * v_world
 	var speed: float = v_local.length()
 	current_speed = speed
 
@@ -260,8 +275,13 @@ func _apply_flight_physics(delta: float) -> void:
 	# ---------- Ground effect ----------
 	var ge_bonus: float = 0.0
 	if ground_effect_enabled and typeof(World) != TYPE_NIL:
-		var ground_h: float = World.get_terrain_height(global_position.x, global_position.z)
-		var h_agl: float = max(global_position.y - ground_h, 0.0)
+		# Resample terrain at ~10 Hz. At 60 m/s that's 6 m between samples
+		# — well under the wingspan the effect cares about.
+		_ground_effect_h_accum += delta
+		if _ground_effect_h_accum > 0.1:
+			_ground_effect_h_accum = 0.0
+			_ground_effect_h_cached = World.get_terrain_height(global_position.x, global_position.z)
+		var h_agl: float = max(global_position.y - _ground_effect_h_cached, 0.0)
 		var ge_range: float = spec.wing_span_for_ground_effect * ground_effect_height_frac
 		if ge_range > 0.0 and h_agl < ge_range:
 			var t: float = clamp(1.0 - h_agl / ge_range, 0.0, 1.0)
@@ -490,9 +510,16 @@ func _update_propeller(delta: float) -> void:
 		prop_hub.rotate_z(lerp(3.0, 40.0, throttle) * delta)
 
 func _update_control_surface_visuals() -> void:
-	# Elevator: input_pitch > 0 (pull up) → elevator trailing edge up → +rotation.x.
+	# No-op when inputs + flap target are unchanged from last frame. Idle
+	# plane with no pilot stays in this branch forever.
+	if (input_pitch == _vis_last_pitch and input_yaw == _vis_last_yaw
+			and input_roll == _vis_last_roll and flap_deployed == _vis_last_flap):
+		return
+	_vis_last_pitch = input_pitch
+	_vis_last_yaw = input_yaw
+	_vis_last_roll = input_roll
+	_vis_last_flap = flap_deployed
 	var el := deg_to_rad(max_elevator_deflection_deg) * input_pitch
-	# Rudder: input_yaw > 0 (nose right) → trailing edge left → rudder rotates about +Y with − sign.
 	var rd := -deg_to_rad(max_rudder_deflection_deg) * input_yaw
 	var ai := deg_to_rad(max_aileron_deflection_deg) * input_roll
 	var fl := deg_to_rad(max_flap_deflection_deg) * flap_deployed
