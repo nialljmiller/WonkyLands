@@ -42,6 +42,7 @@ var _wiggle_phase: float = 0.0
 var _cached_player: Node3D = null
 var _lure_update_accum: float = 0.0
 var _detection_area: Area3D = null
+var _wobble_phase: float = 0.0
 
 # Resource caches — keyed by appearance signature so every fish instanced
 # from the same species scene reuses the same meshes + materials instead
@@ -57,6 +58,7 @@ func _ready():
 	# Save initial spawn position as center of territory
 	initial_position = global_position
 	default_swim_speed = swim_speed
+	_wobble_phase = fposmod(initial_position.x * 0.13 + initial_position.z * 0.17, TAU)
 
 	# Set initial target
 	target_position = get_random_target()
@@ -137,8 +139,10 @@ func _physics_process(delta):
 	# Move fish towards target
 	velocity = direction * swim_speed
 
-	# Apply small vertical wobble for natural movement
-	velocity.y += sin(Time.get_ticks_msec() / 500.0) * 0.2
+	# Apply small vertical wobble for natural movement. Phase offset
+	# per-instance so fish don't all bob in sync (initial_position is
+	# unique per spawn, cached once at _ready).
+	velocity.y += sin(Time.get_ticks_msec() / 500.0 + _wobble_phase) * 0.2
 
 	# Tail wiggle amplitude tracks swim speed so a fleeing fish flicks
 	# harder than one drifting around its territory.
@@ -502,7 +506,10 @@ func _create_lure_v2(parent: Node3D, length: float, height: float, _accent: Stan
 	ball.radial_segments = 8
 	ball.rings = 4
 	lure_mesh.mesh = ball
-	var lure_material := StandardMaterial3D.new()
+	# Each lure needs its own material (pulse phase isn't shared), but
+	# we cache the ref on the fish so _update_lure_emission doesn't do a
+	# property lookup every write.
+	lure_material = StandardMaterial3D.new()
 	lure_material.albedo_color = lure_color
 	lure_material.emission_enabled = true
 	lure_material.emission = lure_color
@@ -629,12 +636,8 @@ func _apply_depth_preferences(delta):
 			velocity.y = lerp(velocity.y, adjustment, blend)
 
 
-func _update_lure_emission(delta):
-	if not lure_mesh:
+func _update_lure_emission(_delta):
+	if lure_material == null:
 		return
-	var lure_material = lure_mesh.material_override
-	if not lure_material:
-		return
-	# Godot 4 renamed emission_energy → emission_energy_multiplier.
 	var pulse = (1.0 + sin(Time.get_ticks_msec() / 500.0)) * 0.5
 	lure_material.emission_energy_multiplier = lure_intensity + pulse * lure_intensity
