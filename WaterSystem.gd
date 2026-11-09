@@ -126,6 +126,8 @@ func create_water_chunk(chunk_pos: Vector2, terrain_generator = null):
 	var water_mesh_instance = MeshInstance3D.new()
 	water_mesh_instance.mesh = water_plane_mesh
 	water_mesh_instance.name = "WaterChunk_%d_%d" % [chunk_pos.x, chunk_pos.y]
+	# Transparent waves don't need to project shadows.
+	water_mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	
 	# Create a standard material for fallback (in case shader fails)
 	var standard_material = StandardMaterial3D.new()

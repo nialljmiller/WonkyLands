@@ -191,12 +191,18 @@ func create_fish_mesh():
 
 	var rig := Node3D.new()
 	rig.name = "FishRig"
+	# Fish are underwater — shadows are largely invisible through the
+	# surface and the shadow pass over 400+ fish is pure waste.
+	# We flip cast_shadow on each MeshInstance3D below; keeping the flip
+	# per-instance (instead of on a shared mesh) so the behavior is
+	# explicit here.
 
 	# ---- Body: proper tapered teardrop mesh ----
 	var body := MeshInstance3D.new()
 	body.name = "Body"
 	body.mesh = meshes.body
 	body.material_override = body_mat
+	body.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	rig.add_child(body)
 
 	# ---- Dorsal fin: curved triangle on top ----
@@ -204,6 +210,7 @@ func create_fish_mesh():
 	dorsal.name = "Dorsal"
 	dorsal.mesh = meshes.dorsal
 	dorsal.material_override = body_mat
+	dorsal.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	dorsal.position = Vector3(0.0, height * 0.42, length * 0.0)
 	rig.add_child(dorsal)
 
@@ -213,6 +220,7 @@ func create_fish_mesh():
 		fin.name = "PectoralFin"
 		fin.mesh = meshes.fin
 		fin.material_override = body_mat
+		fin.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		fin.position = Vector3(side * width * 0.42, -height * 0.05, -length * 0.08)
 		fin.rotation_degrees = Vector3(0.0, 90.0 * side, -25.0 * side)
 		rig.add_child(fin)
@@ -225,6 +233,7 @@ func create_fish_mesh():
 	tail_fin.name = "TailFin"
 	tail_fin.mesh = meshes.tail
 	tail_fin.material_override = body_mat
+	tail_fin.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	tail_fin.position = Vector3(0.0, 0.0, length * 0.15)
 	tail_pivot.add_child(tail_fin)
 	rig.add_child(tail_pivot)
@@ -237,6 +246,7 @@ func create_fish_mesh():
 		eye.name = "Eye"
 		eye.mesh = meshes.eye
 		eye.material_override = eye_white_mat
+		eye.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		eye.position = Vector3(side * width * 0.4, height * 0.15, -length * 0.33)
 		rig.add_child(eye)
 
@@ -244,6 +254,7 @@ func create_fish_mesh():
 		pupil.name = "Pupil"
 		pupil.mesh = meshes.pupil
 		pupil.material_override = pupil_mat
+		pupil.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		pupil.position = Vector3(side * width * 0.5, height * 0.15, -length * 0.36)
 		rig.add_child(pupil)
 
@@ -506,6 +517,7 @@ func _create_lure_v2(parent: Node3D, length: float, height: float, _accent: Stan
 	ball.radial_segments = 8
 	ball.rings = 4
 	lure_mesh.mesh = ball
+	lure_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	# Each lure needs its own material (pulse phase isn't shared), but
 	# we cache the ref on the fish so _update_lure_emission doesn't do a
 	# property lookup every write.

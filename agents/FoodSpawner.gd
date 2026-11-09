@@ -64,8 +64,10 @@ func _spawn_berry_at(pos: Vector3) -> void:
 static func _build_berry_mesh() -> Node3D:
 	var root := Node3D.new()
 	root.name = "Berry"
+	# Berries are tiny — shadows aren't worth the per-mesh shadow pass.
 	# Stem
 	var stem := MeshInstance3D.new()
+	stem.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var stem_mesh := CylinderMesh.new()
 	stem_mesh.top_radius = 0.006
 	stem_mesh.bottom_radius = 0.01
@@ -80,6 +82,7 @@ static func _build_berry_mesh() -> Node3D:
 	root.add_child(stem)
 	# Berry
 	var berry := MeshInstance3D.new()
+	berry.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var berry_mesh := SphereMesh.new()
 	berry_mesh.radius = 0.035
 	berry_mesh.height = 0.07
