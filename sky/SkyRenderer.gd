@@ -122,8 +122,8 @@ func _build_environment() -> void:
 	env.tonemap_exposure = 1.0
 	env.fog_enabled = true
 	env.fog_light_color = Color(0.5, 0.5, 0.8)
-	env.fog_density = 0.001
-	env.fog_sky_affect = 0.4
+	env.fog_density = 0.0018
+	env.fog_sky_affect = 0.55
 	world_env.environment = env
 	add_child(world_env)
 
@@ -223,7 +223,10 @@ func _update_sky_colors() -> void:
 	sky_material.sky_horizon_color = horizon
 	sky_material.ground_horizon_color = horizon
 	env.ambient_light_energy = lerp(0.02, 0.4, day_factor)
-	env.fog_density = lerp(0.005, 0.001, day_factor)
+	# Thicker fog pushes the terrain horizon into a soft fade instead of
+	# a visible edge. Still clear enough at day to see the mountains in
+	# the mid distance.
+	env.fog_density = lerp(0.006, 0.0018, day_factor)
 
 # ---------------------------------------------------------------------
 # Mesh + material helpers

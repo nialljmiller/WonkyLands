@@ -28,6 +28,7 @@ const TreeSpecies = preload("res://trees/TreeSpecies.gd")
 
 var species_list: Array = []  # of TreeSpecies instances
 var tree_positions: Dictionary = {}            # Vector2 -> Array[Vector3] (near detail)
+var near_tree_chunks: Dictionary = {}          # Vector2 -> Node3D (near-ring root per chunk)
 var far_tree_chunks: Dictionary = {}           # Vector2 -> Node3D (impostor root per chunk)
 var terrain_generator: Node = null
 
@@ -39,6 +40,13 @@ var terrain_generator: Node = null
 # MultiMeshes and a shared StaticBody3D — no per-tree node tree.
 var _species_parts_cache: Dictionary = {}
 var _species_collisions_cache: Dictionary = {}
+
+# Deferred near-ring placement — placing a chunk's trees is bursty
+# (many MMIs + many CollisionShape3Ds in one frame). We queue missing
+# chunks and process one per _process tick to spread the cost.
+var _pending_near_placements: Array = []  # Array of {pos: Vector2, biome: int}
+# Analogous queue for the far-ring impostor chunks.
+var _pending_far_placements: Array = []   # Array of {pos: Vector2, biome: int, chunk_size: int}
 
 const BIOME_DENSITY := {
 	"TEMPERATE_FOREST":   1.5,
@@ -53,6 +61,22 @@ const BIOME_DENSITY := {
 # ---------------------------------------------------------------------
 func _ready() -> void:
 	_discover_species()
+
+func _process(_delta: float) -> void:
+	# One chunk per frame — placement work (MultiMesh build + 100+
+	# CollisionShape3D nodes) is the single biggest source of streaming
+	# hitches, so we spread it.
+	if _pending_near_placements.size() > 0:
+		var job: Dictionary = _pending_near_placements.pop_front()
+		var cp: Vector2 = job.pos
+		# Guard: by the time we dequeue, the chunk may have rolled out
+		# of view again, or already been placed through another path.
+		if not near_tree_chunks.has(cp):
+			place_trees_in_chunk(cp, job.biome)
+	elif _pending_far_placements.size() > 0:
+		var job2: Dictionary = _pending_far_placements.pop_front()
+		if not far_tree_chunks.has(job2.pos):
+			place_far_trees_in_chunk(job2.pos, job2.biome, job2.chunk_size)
 
 # ---------------------------------------------------------------------
 # Species discovery — scan species_dir for TreeSpecies subclasses.
@@ -109,25 +133,31 @@ func update_tree_chunks(player_pos: Vector3, view_distance: int, chunk_size: int
 			)
 			if cheb <= view_distance:
 				keep_near[chunk_pos] = true
-				if terrain_generator.loaded_chunks.has(chunk_pos) and not tree_positions.has(chunk_pos):
-					var chunk_node: Node3D = terrain_generator.loaded_chunks[chunk_pos].node
-					place_trees_in_chunk(chunk_node, chunk_pos, biome)
-				# Remove any far-ring impostor for this chunk — near-ring
-				# detailed trees take over.
+				# near_tree_chunks is our authoritative "is placed" marker.
+				# tree_positions is just the per-chunk position list; both
+				# are kept in lockstep so the lifetime bug (trees as
+				# children of the terrain chunk node → die on LOD swap,
+				# tree_positions stale forever) can't recur.
+				if not near_tree_chunks.has(chunk_pos) and not _is_queued_near(chunk_pos):
+					_pending_near_placements.append({"pos": chunk_pos, "biome": biome})
 				if far_tree_chunks.has(chunk_pos):
 					_remove_far_trees(chunk_pos)
 			else:
 				keep_far[chunk_pos] = true
-				if not far_tree_chunks.has(chunk_pos):
-					place_far_trees_in_chunk(chunk_pos, biome, chunk_size)
+				if not far_tree_chunks.has(chunk_pos) and not _is_queued_far(chunk_pos):
+					_pending_far_placements.append({"pos": chunk_pos, "biome": biome, "chunk_size": chunk_size})
 
 	# Unload near trees that rolled out of view.
 	var to_remove_near: Array = []
-	for chunk_pos in tree_positions:
+	for chunk_pos in near_tree_chunks:
 		if not keep_near.has(chunk_pos):
 			to_remove_near.append(chunk_pos)
 	for chunk_pos in to_remove_near:
 		remove_trees_in_chunk(chunk_pos)
+
+	# Drop pending placements that are no longer in view.
+	_pending_near_placements = _pending_near_placements.filter(func(j): return keep_near.has(j.pos))
+	_pending_far_placements = _pending_far_placements.filter(func(j): return keep_far.has(j.pos))
 
 	# Unload far impostor chunks that rolled out.
 	var to_remove_far: Array = []
@@ -137,8 +167,24 @@ func update_tree_chunks(player_pos: Vector3, view_distance: int, chunk_size: int
 	for chunk_pos in to_remove_far:
 		_remove_far_trees(chunk_pos)
 
+func _is_queued_near(pos: Vector2) -> bool:
+	for j in _pending_near_placements:
+		if j.pos == pos:
+			return true
+	return false
+
+func _is_queued_far(pos: Vector2) -> bool:
+	for j in _pending_far_placements:
+		if j.pos == pos:
+			return true
+	return false
+
 func remove_trees_in_chunk(chunk_pos: Vector2) -> void:
 	tree_positions.erase(chunk_pos)
+	var root = near_tree_chunks.get(chunk_pos, null)
+	if root != null and is_instance_valid(root):
+		root.queue_free()
+	near_tree_chunks.erase(chunk_pos)
 
 func _remove_far_trees(chunk_pos: Vector2) -> void:
 	var node = far_tree_chunks.get(chunk_pos, null)
@@ -150,7 +196,7 @@ func _remove_far_trees(chunk_pos: Vector2) -> void:
 # Placement — iterates species, filters by biome + elevation + slope,
 # enforces min spacing.
 # ---------------------------------------------------------------------
-func place_trees_in_chunk(chunk_node: Node3D, chunk_pos: Vector2, biome_type: int) -> void:
+func place_trees_in_chunk(chunk_pos: Vector2, biome_type: int) -> void:
 	var chunk_size: int = terrain_generator.chunk_size
 	var water_level: float = terrain_generator.water_level
 	var world_pos_x: float = chunk_pos.x * chunk_size
@@ -166,12 +212,11 @@ func place_trees_in_chunk(chunk_node: Node3D, chunk_pos: Vector2, biome_type: in
 
 	tree_positions[chunk_pos] = []
 	var placed: Array[Vector3] = []
-	# Per-species chunk-local transforms. Each entry is the per-tree
-	# transform (translation + yaw + scale) in chunk-local space; the
-	# part offsets inside the species template are multiplied in at
-	# batch time.
+	# Per-species chunk-local transforms. Chunk-local here means relative
+	# to the tree-chunk root node, which we anchor at the chunk's world
+	# origin (world_pos_x, 0, world_pos_z).
 	var by_species: Dictionary = {}
-	var chunk_origin := chunk_node.position
+	var chunk_origin := Vector3(world_pos_x, 0.0, world_pos_z)
 	var attempts: int = 0
 	var max_attempts: int = num_trees * 5
 
@@ -226,8 +271,16 @@ func place_trees_in_chunk(chunk_node: Node3D, chunk_pos: Vector2, biome_type: in
 			by_species[species] = []
 		by_species[species].append(tree_xform)
 
+	# Always create a root node, even for empty chunks — that way
+	# near_tree_chunks.has(chunk_pos) stays authoritative. An empty root
+	# is just an un-populated Node3D; cheap.
+	var root := Node3D.new()
+	root.name = "TreeChunk_%d_%d" % [chunk_pos.x, chunk_pos.y]
+	root.position = chunk_origin
 	if not by_species.is_empty():
-		_attach_near_ring_batch(chunk_node, by_species)
+		_attach_near_ring_batch(root, by_species)
+	add_child(root)
+	near_tree_chunks[chunk_pos] = root
 
 	if placed.size() > 0:
 		print("Placed ", placed.size(), " ", biome_name, " trees in chunk ", chunk_pos)

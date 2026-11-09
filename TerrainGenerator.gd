@@ -7,8 +7,8 @@ extends Node3D
 # roams inside this zone and relies on it always being fully loaded.
 @export var permanent_chunk_radius: int = 1    # 3x3 = ~384m x 384m at chunk_size 128
 @export var view_distance: int = 1  # Legacy — used only for trees (kept close)
-@export var terrain_view_distance: int = 10  # Terrain mesh ring. Covered by LOD.
-@export var water_view_distance: int = 5     # Water plane ring.
+@export var terrain_view_distance: int = 16  # Terrain mesh ring. Covered by LOD.
+@export var water_view_distance: int = 8     # Water plane ring.
 @export var tree_view_distance: int = 1      # Near-detail tree ring (expensive).
 @export var chunk_update_interval: float = 0.25  # Re-check chunk loading this often (seconds)
 
@@ -20,8 +20,8 @@ extends Node3D
 # Anything beyond the last entry uses the final LOD. subdivisions[i] is the
 # grid density for that LOD — a chunk at LOD 0 has subdivisions^2 quads.
 # Five levels now so very-far horizon chunks are nearly free.
-@export var lod_rings: PackedInt32Array = PackedInt32Array([1, 2, 4, 7])
-@export var lod_subdivisions: PackedInt32Array = PackedInt32Array([128, 64, 24, 8, 4])
+@export var lod_rings: PackedInt32Array = PackedInt32Array([1, 2, 4, 7, 11])
+@export var lod_subdivisions: PackedInt32Array = PackedInt32Array([128, 64, 24, 8, 4, 2])
 
 @export var noise_scale: float = 0.05
 @export var amplitude: float = 50.0
