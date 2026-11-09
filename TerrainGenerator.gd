@@ -64,6 +64,14 @@ var tree_system = null
 var _pending_chunks: Dictionary = {}
 var _chunk_update_timer: float = 0.0
 
+# Worker threads finish out-of-sync; multiple can land in the same
+# frame. _pending_finalize is the main-thread queue of ready chunks;
+# we drain at most max_finalize_per_frame per tick so GPU mesh upload
+# cost is spread. The visible cost of waiting an extra frame or two
+# is far smaller than a 1-frame spike.
+@export var max_finalize_per_frame: int = 1
+var _pending_finalize: Array = []
+
 # Terrain shader + per-biome materials are built once and shared across
 # all chunks. Creating a new Shader/ShaderMaterial per chunk was the
 # main source of per-frame hitches when chunks finalised.
@@ -138,6 +146,14 @@ func _ready():
 	merl_timer.timeout.connect(func(): _spawn_merl())
 
 func _process(delta):
+	# Drain the finalize queue first — strict budget per frame.
+	var left: int = max_finalize_per_frame
+	while left > 0 and _pending_finalize.size() > 0:
+		var job: Dictionary = _pending_finalize.pop_front()
+		_finalize_chunk(job.chunk_pos, job.lod, job.world_pos_x, job.world_pos_z,
+			job.biome, job.vertices, job.indices, job.normals, job.collision_shape)
+		left -= 1
+
 	var player = get_node_or_null("Player")
 	if not player:
 		return
@@ -492,8 +508,26 @@ func _build_chunk_on_worker(chunk_pos: Vector2, lod: int) -> void:
 		collision_shape = ConcavePolygonShape3D.new()
 		collision_shape.set_faces(faces)
 
-	call_deferred("_finalize_chunk", chunk_pos, lod, world_pos_x, world_pos_z, dominant_biome,
-		vertices, indices, normals, collision_shape)
+	call_deferred("_enqueue_finalize", {
+		"chunk_pos": chunk_pos,
+		"lod": lod,
+		"world_pos_x": world_pos_x,
+		"world_pos_z": world_pos_z,
+		"biome": dominant_biome,
+		"vertices": vertices,
+		"indices": indices,
+		"normals": normals,
+		"collision_shape": collision_shape,
+	})
+
+func _enqueue_finalize(job: Dictionary) -> void:
+	# Permanent chunks should appear ASAP at startup (before the player
+	# can see empty ground); skip the queue for them.
+	if _is_permanent_chunk(job.chunk_pos):
+		_finalize_chunk(job.chunk_pos, job.lod, job.world_pos_x, job.world_pos_z,
+			job.biome, job.vertices, job.indices, job.normals, job.collision_shape)
+	else:
+		_pending_finalize.append(job)
 
 func _finalize_chunk(chunk_pos: Vector2, lod: int, world_pos_x: float, world_pos_z: float, biome: int,
 		vertices: PackedVector3Array, indices: PackedInt32Array, normals: PackedVector3Array,
