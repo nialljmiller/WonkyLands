@@ -41,6 +41,7 @@ var tail_pivot: Node3D = null           # child node used for wiggle animation
 var _wiggle_phase: float = 0.0
 var _cached_player: Node3D = null
 var _lure_update_accum: float = 0.0
+var _detection_area: Area3D = null
 
 # Resource caches — keyed by appearance signature so every fish instanced
 # from the same species scene reuses the same meshes + materials instead
@@ -73,20 +74,20 @@ func _ready():
 	add_child(collision)
 
 	# Add detection area for player and other fish
-	var detection_area = Area3D.new()
-	detection_area.name = "DetectionArea"
+	_detection_area = Area3D.new()
+	_detection_area.name = "DetectionArea"
 
 	var detection_shape = CollisionShape3D.new()
 	var sphere_shape = SphereShape3D.new()
 	sphere_shape.radius = flee_distance
 	detection_shape.shape = sphere_shape
 
-	detection_area.add_child(detection_shape)
-	add_child(detection_area)
+	_detection_area.add_child(detection_shape)
+	add_child(_detection_area)
 
 	# Connect signals
-	detection_area.body_entered.connect(_on_body_entered_detection)
-	detection_area.body_exited.connect(_on_body_exited_detection)
+	_detection_area.body_entered.connect(_on_body_entered_detection)
+	_detection_area.body_exited.connect(_on_body_exited_detection)
 
 	# Resolve water system + player via World — no tree walking, no
 	# repeated lookups in _physics_process.
@@ -302,6 +303,19 @@ func _get_or_build_meshes(sig: String, length: float, height: float, width: floa
 	}
 	_MESH_CACHE[sig] = entry
 	return entry
+
+# Called by FishSystem when the fish crosses the cull boundary. Flips
+# the Area3D's overlap checks off at the same time as physics so the
+# physics server doesn't keep testing 400+ sphere areas for a fish that
+# isn't running anyway.
+func set_awake(awake: bool) -> void:
+	if is_physics_processing() != awake:
+		set_physics_process(awake)
+	if _detection_area != null:
+		if _detection_area.monitoring != awake:
+			_detection_area.monitoring = awake
+		if _detection_area.monitorable != awake:
+			_detection_area.monitorable = awake
 
 static func _get_eye_white_mat() -> StandardMaterial3D:
 	if _EYE_WHITE_MAT == null:

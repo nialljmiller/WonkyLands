@@ -13,6 +13,22 @@ var biomes: Array[String] = []            # biome names from TerrainGenerator.Bi
 var elevation_min: float = 0.0            # inclusive, in world units
 var elevation_max: float = 100.0          # inclusive
 
+# Static material cache — every tree that previously allocated its own
+# StandardMaterial3D with (color, roughness) now shares one. With ~100
+# trees per chunk × 2-3 materials each, this cuts thousands of material
+# instances across the world down to a few dozen.
+static var _MAT_CACHE: Dictionary = {}
+
+static func _cached_mat(color: Color, roughness: float) -> StandardMaterial3D:
+	var key: String = "%s|%.2f" % [color.to_html(), roughness]
+	if _MAT_CACHE.has(key):
+		return _MAT_CACHE[key]
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.roughness = roughness
+	_MAT_CACHE[key] = mat
+	return mat
+
 func build_tree() -> Node3D:
 	push_error("TreeSpecies.build_tree() must be overridden by %s" % species_name)
 	return null
@@ -62,10 +78,7 @@ static func make_trunk(color: Color, radius: float, height: float) -> MeshInstan
 	m.height = height
 	var mi := MeshInstance3D.new()
 	mi.mesh = m
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.roughness = 0.9
-	mi.material_override = mat
+	mi.material_override = _cached_mat(color, 0.9)
 	return mi
 
 static func make_curved_trunk(color: Color, radius: float, height: float) -> MeshInstance3D:
@@ -80,10 +93,7 @@ static func make_branch(color: Color, radius: float, length: float) -> MeshInsta
 	m.height = length
 	var mi := MeshInstance3D.new()
 	mi.mesh = m
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.roughness = 0.9
-	mi.material_override = mat
+	mi.material_override = _cached_mat(color, 0.9)
 	mi.rotation_degrees.x = 90.0
 	mi.position.z = length * 0.5
 	return mi
@@ -95,10 +105,7 @@ static func make_cone_foliage(color: Color, radius: float, height: float) -> Mes
 	m.height = height
 	var mi := MeshInstance3D.new()
 	mi.mesh = m
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.roughness = 0.7
-	mi.material_override = mat
+	mi.material_override = _cached_mat(color, 0.7)
 	return mi
 
 static func make_sphere_foliage(color: Color, radius: float) -> MeshInstance3D:
@@ -107,10 +114,7 @@ static func make_sphere_foliage(color: Color, radius: float) -> MeshInstance3D:
 	m.height = radius * 2.0
 	var mi := MeshInstance3D.new()
 	mi.mesh = m
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.roughness = 0.7
-	mi.material_override = mat
+	mi.material_override = _cached_mat(color, 0.7)
 	return mi
 
 static func make_palm_frond(color: Color) -> MeshInstance3D:
@@ -118,10 +122,7 @@ static func make_palm_frond(color: Color) -> MeshInstance3D:
 	m.size = Vector3(2.0, 0.1, 0.5)
 	var mi := MeshInstance3D.new()
 	mi.mesh = m
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.roughness = 0.6
-	mi.material_override = mat
+	mi.material_override = _cached_mat(color, 0.6)
 	mi.position.z = 1.0
 	return mi
 

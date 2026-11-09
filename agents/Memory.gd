@@ -12,14 +12,14 @@ var _items: Dictionary = {}                 # id -> {kind, position, salience, a
 var forget_after_seconds: float = 20.0      # entry drops when age exceeds this
 
 func update(delta: float, new_percepts: Array) -> void:
-	# Age existing entries
-	for id in _items.keys():
+	# Age existing entries. Dictionary iteration yields keys directly —
+	# no `.keys()` copy needed.
+	for id in _items:
 		_items[id].age += delta
 	# Fold in fresh observations
 	for p in new_percepts:
 		var id: String = p.id
 		if _items.has(id):
-			# Refresh — take max salience, reset age
 			var existing: Dictionary = _items[id]
 			existing.age = 0.0
 			existing.position = p.position
@@ -33,31 +33,32 @@ func update(delta: float, new_percepts: Array) -> void:
 				"age": 0.0,
 				"sense": p.sense,
 			}
-	# Drop forgotten items
-	for id in _items.keys():
+	# Drop forgotten items — collect first (can't erase during iteration).
+	var expired: Array = []
+	for id in _items:
 		if _items[id].age > forget_after_seconds:
-			_items.erase(id)
+			expired.append(id)
+	for id in expired:
+		_items.erase(id)
 
 # ---------------------------------------------------------------------
 # Query helpers
 # ---------------------------------------------------------------------
 func has_kind(kind: int) -> bool:
-	for id in _items.keys():
+	for id in _items:
 		if _items[id].kind == kind:
 			return true
 	return false
 
 func most_salient(kind: int = -1) -> Dictionary:
-	# Returns the entry with the highest (salience * freshness) for the
-	# given kind (or any kind if -1). Freshness = 1 - age/forget_after.
-	# Returns empty dict if nothing matches.
 	var best: Dictionary = {}
 	var best_score: float = -1.0
-	for id in _items.keys():
+	var inv_forget: float = 1.0 / forget_after_seconds
+	for id in _items:
 		var item: Dictionary = _items[id]
 		if kind >= 0 and item.kind != kind:
 			continue
-		var fresh: float = 1.0 - item.age / forget_after_seconds
+		var fresh: float = 1.0 - item.age * inv_forget
 		var score: float = item.salience * fresh
 		if score > best_score:
 			best_score = score
@@ -67,5 +68,8 @@ func most_salient(kind: int = -1) -> Dictionary:
 func count() -> int:
 	return _items.size()
 
+# Read-only reference to the internal map. Callers must NOT mutate it.
+# (Previously returned a duplicate; the OBSESSED brain state calls this
+# every tick — the copy was wasted.)
 func all_items() -> Dictionary:
-	return _items.duplicate()
+	return _items

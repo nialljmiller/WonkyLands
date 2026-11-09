@@ -92,8 +92,10 @@ func _update_fish_culling() -> void:
 		if not is_instance_valid(f):
 			continue
 		var near: bool = f.global_position.distance_squared_to(player_pos) < cull_sq
-		if f.is_physics_processing() != near:
-			f.set_physics_process(near)
+		# set_awake() toggles both physics_process and the Area3D's
+		# overlap monitoring — the detection area is almost as expensive
+		# as the physics_process body was.
+		f.set_awake(near)
 
 # ---------------------------------------------------------------------
 # Species discovery — anything named *Fish.tscn under species_dir counts
