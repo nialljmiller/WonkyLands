@@ -69,7 +69,7 @@ var _chunk_update_timer: float = 0.0
 # we drain at most max_finalize_per_frame per tick so GPU mesh upload
 # cost is spread. The visible cost of waiting an extra frame or two
 # is far smaller than a 1-frame spike.
-@export var max_finalize_per_frame: int = 1
+@export var max_finalize_per_frame: int = 3
 var _pending_finalize: Array = []
 
 # Terrain shader + per-biome materials are built once and shared across
@@ -146,7 +146,18 @@ func _ready():
 	merl_timer.timeout.connect(func(): _spawn_merl())
 
 func _process(delta):
-	# Drain the finalize queue first — strict budget per frame.
+	# Drain the finalize queue first — priority-sort by distance to the
+	# tracked body so the chunks the player is actually flying into land
+	# before chunks that are already behind them.
+	if _pending_finalize.size() > 1:
+		var tracked: Node3D = _tracked_body()
+		if tracked != null:
+			var pcx: float = floor(tracked.global_position.x / chunk_size)
+			var pcz: float = floor(tracked.global_position.z / chunk_size)
+			_pending_finalize.sort_custom(func(a, b):
+				var da = (a.chunk_pos.x - pcx) * (a.chunk_pos.x - pcx) + (a.chunk_pos.y - pcz) * (a.chunk_pos.y - pcz)
+				var db = (b.chunk_pos.x - pcx) * (b.chunk_pos.x - pcx) + (b.chunk_pos.y - pcz) * (b.chunk_pos.y - pcz)
+				return da < db)
 	var left: int = max_finalize_per_frame
 	while left > 0 and _pending_finalize.size() > 0:
 		var job: Dictionary = _pending_finalize.pop_front()

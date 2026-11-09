@@ -129,7 +129,12 @@ func update_tree_chunks(player_pos: Vector3, view_distance: int, chunk_size: int
 	var center_x: int = int(floor(player_pos.x / chunk_size))
 	var center_z: int = int(floor(player_pos.z / chunk_size))
 	var far_vd: int = max(view_distance, tree_far_view_distance)
-	var new_collision_chunk := Vector2(center_x, center_z)
+	# Tree collision only matters when the player is on foot. Flying past
+	# at altitude never touches trunks, and building 100+ CollisionShape3Ds
+	# every time a plane crosses a chunk boundary was the visible hitch.
+	# NO_CHUNK sentinel suppresses collision entirely.
+	var player_on_foot: bool = _is_player_on_foot()
+	var new_collision_chunk := Vector2(center_x, center_z) if player_on_foot else Vector2(999999, 999999)
 	if new_collision_chunk != _collision_chunk:
 		_migrate_collision(_collision_chunk, new_collision_chunk)
 		_collision_chunk = new_collision_chunk
@@ -179,6 +184,20 @@ func update_tree_chunks(player_pos: Vector3, view_distance: int, chunk_size: int
 			to_remove_far.append(chunk_pos)
 	for chunk_pos in to_remove_far:
 		_remove_far_trees(chunk_pos)
+
+func _is_player_on_foot() -> bool:
+	# "On foot" = the active player exists and is NOT currently piloting
+	# the plane. The plane records whoever controls it in
+	# `controlling_player`; a non-null value means they're seated.
+	if typeof(World) == TYPE_NIL:
+		return false
+	var p = World.get_player()
+	if p == null:
+		return false
+	var plane = get_tree().current_scene.get_node_or_null("TerrainGenerator/BushPlane")
+	if plane == null or not "controlling_player" in plane:
+		return true
+	return plane.controlling_player != p
 
 func _is_queued_near(pos: Vector2) -> bool:
 	for j in _pending_near_placements:
