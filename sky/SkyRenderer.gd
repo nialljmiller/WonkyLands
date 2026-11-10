@@ -227,6 +227,9 @@ func _update_sky_colors() -> void:
 	# a visible edge. Still clear enough at day to see the mountains in
 	# the mid distance.
 	env.fog_density = lerp(0.006, 0.0018, day_factor)
+	# Fog tints the sky too (fog_sky_affect), so it has to darken at
+	# night or it paints a lavender veil over the stars.
+	env.fog_light_color = Color(0.03, 0.03, 0.06).lerp(Color(0.5, 0.5, 0.8), day_factor).lerp(horizon, sunset_factor * 0.5)
 
 # ---------------------------------------------------------------------
 # Mesh + material helpers

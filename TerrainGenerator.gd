@@ -41,6 +41,7 @@ var water_system = null
 
 # Astronomical system settings
 @export var enable_astronomical_system: bool = true
+@export var enable_star_field: bool = true   # real stars from data/sky_catalog.json
 @export var day_length: float = 360000.0  # Seconds per full day cycle
 @export var start_time: float = 8.0  # Starting hour (24-hour format)
 var astronomical_system = null
@@ -320,6 +321,13 @@ func initialize_astronomical_system():
 	sky.name = "SkyRenderer"
 	sky.engine = astronomical_system
 	add_child(sky)
+
+	# Star field — catalog stars rotating with sidereal time.
+	if enable_star_field:
+		var stars = load("res://sky/StarField.gd").new()
+		stars.name = "StarField"
+		stars.engine = astronomical_system
+		add_child(stars)
 
 func initialize_water_system():
 	# Create water system node
