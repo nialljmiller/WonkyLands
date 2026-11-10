@@ -1,7 +1,7 @@
 extends RefCounted
-## Merl's decision-making layer — pure logic, no scene-tree access.
+## Uiop's decision-making layer — pure logic, no scene-tree access.
 ##
-## The controller (MerlController.gd) calls tick() each physics frame.
+## The controller (UiopController.gd) calls tick() each physics frame.
 ## The brain returns an intent Dictionary:
 ##   {
 ##     "target": Vector3 (world-space destination),
@@ -11,7 +11,7 @@ extends RefCounted
 ##   }
 ##
 ## Keeping brain and controller separate so a future LLM-driven brain
-## (MerlLLMBrain.gd) can be swapped in: same tick() signature, different
+## (UiopLLMBrain.gd) can be swapped in: same tick() signature, different
 ## internals. The controller doesn't care how decisions get made.
 
 const Perception = preload("res://agents/Perception.gd")
@@ -39,14 +39,14 @@ var _obsession_point: Vector3 = Vector3.ZERO
 var _obsession_id: String = ""           # memory id of the thing he's obsessed with
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 # Optional memory handle — the controller injects this after init so
-# the brain can query what Merl has perceived rather than inventing
+# the brain can query what Uiop has perceived rather than inventing
 # random positions. If null, we fall back to random wander targets.
 var memory = null
 # Optional needs handle — injected by controller. If null we skip the
 # needs-driven state transitions.
 var needs = null
 
-# Thresholds for how close Merl needs to be before he "arrives" and
+# Thresholds for how close Uiop needs to be before he "arrives" and
 # consumes / naps.
 var eat_distance: float = 0.6
 var nap_arrive_distance: float = 1.0
@@ -61,7 +61,7 @@ func _init() -> void:
 
 # ---------------------------------------------------------------------
 # Public: returns the current intent given the world state.
-#   self_pos    = Merl's current position
+#   self_pos    = Uiop's current position
 #   player_pos  = player's position (Vector3.INF if no player)
 #   ground_y_at = Callable to query terrain height at (x, z) — used
 #                 to keep targets grounded
@@ -207,7 +207,7 @@ func tick(self_pos: Vector3, player_pos: Vector3, delta: float, ground_y_at: Cal
 			return _intent(_nap_target, 0.35 + 0.3 * frac, "napping", false)
 	return _intent(self_pos, 0.0, "idle", false)
 
-# Called by the controller when Merl arrives at food (brain state =
+# Called by the controller when Uiop arrives at food (brain state =
 # EATING and he's within eat_distance). Controller passes the berry
 # node so we can clear our reference; the controller handles the
 # actual consume + needs.eat() + spawner notification.
@@ -219,7 +219,7 @@ func on_eat_consumed() -> void:
 	_state = State.WANDER
 
 # Called each tick by the controller while NAPPING — returns true if
-# Merl has arrived at his nap spot (so the controller can call
+# Uiop has arrived at his nap spot (so the controller can call
 # needs.sleep()).
 func is_napping_at_spot(self_pos: Vector3) -> bool:
 	if _state != State.NAPPING:

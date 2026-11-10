@@ -1,9 +1,9 @@
 extends CharacterBody3D
-## Merl — a low-poly procedural opossum that roams the permanent chunks
-## around the base. Brain is pluggable (see MerlBrain.gd); this file
+## Uiop — a low-poly procedural opossum that roams the permanent chunks
+## around the base. Brain is pluggable (see UiopBrain.gd); this file
 ## just does physics, animation, and visual construction.
 
-const MerlBrain = preload("res://agents/MerlBrain.gd")
+const UiopBrain = preload("res://agents/UiopBrain.gd")
 const Perception = preload("res://agents/Perception.gd")
 const Memory = preload("res://agents/Memory.gd")
 const Needs = preload("res://agents/Needs.gd")
@@ -37,7 +37,7 @@ func _ready() -> void:
 	_perception = Perception.new()
 	_memory = Memory.new()
 	_needs = Needs.new()
-	_brain = MerlBrain.new()
+	_brain = UiopBrain.new()
 	_brain.home_center = home_center
 	_brain.home_radius = home_radius
 	_brain.memory = _memory
@@ -156,7 +156,7 @@ func _scene_root() -> Node:
 func _handle_eating(_delta: float) -> void:
 	# If brain says EATING, find the closest active berry we remember
 	# and, if we're close enough, consume it.
-	if _brain._state != MerlBrain.State.EATING:
+	if _brain._state != UiopBrain.State.EATING:
 		return
 	var spawner = _scene_root().get_node_or_null("FoodSpawner")
 	if spawner == null or not "active_food" in spawner:
@@ -181,7 +181,7 @@ func _handle_eating(_delta: float) -> void:
 		_brain.on_eat_consumed()
 
 func _handle_napping(delta: float) -> void:
-	if _brain._state != MerlBrain.State.NAPPING:
+	if _brain._state != UiopBrain.State.NAPPING:
 		return
 	if _brain.is_napping_at_spot(global_position):
 		_needs.sleep(delta)
@@ -224,7 +224,7 @@ static func _m(c: Color, roughness: float, metallic: float) -> StandardMaterial3
 	return mat
 
 func _build_visuals() -> void:
-	# Convention: Merl faces -Z. Body is roughly 40cm long, 16cm wide,
+	# Convention: Uiop faces -Z. Body is roughly 40cm long, 16cm wide,
 	# 14cm tall; tail adds another 40cm.
 	var rig := Node3D.new()
 	rig.name = "OpossumRig"

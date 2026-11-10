@@ -1,0 +1,7 @@
+[gd_scene load_steps=2 format=3 uid="uid://cm3rkqnpl0uiop"]
+
+[ext_resource type="Script" path="res://agents/UiopController.gd" id="1_uiop"]
+
+[node name="Uiop" type="CharacterBody3D"]
+floor_snap_length = 0.3
+script = ExtResource("1_uiop")

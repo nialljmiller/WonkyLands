@@ -1,10 +1,10 @@
 extends Node3D
-## Tiny world-state holder for Merl's food (berries). Spawns a handful
-## of berry nodes inside Merl's home area at startup; when Merl eats
+## Tiny world-state holder for Uiop's food (berries). Spawns a handful
+## of berry nodes inside Uiop's home area at startup; when Uiop eats
 ## one it respawns after a cooldown at a new random spot.
 ##
 ## Berries are StaticBody3D so Perception can pick them up as part of
-## future object queries (or by tree walk). For now MerlController's
+## future object queries (or by tree walk). For now UiopController's
 ## perception reaches into this node's `active_food` array directly,
 ## which is the simplest coupling.
 
@@ -33,7 +33,7 @@ func _process(delta: float) -> void:
 			_respawn_queue.remove_at(i)
 			_spawn_berry_at(_pick_position())
 
-# Called by Merl when he eats a berry. Removes from world and schedules
+# Called by Uiop when he eats a berry. Removes from world and schedules
 # a respawn.
 func consume(berry: Node3D) -> void:
 	if berry == null or not is_instance_valid(berry):

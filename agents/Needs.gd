@@ -1,5 +1,5 @@
 extends RefCounted
-## Needs — Merl's internal drives. Values rise over time (decay away
+## Needs — Uiop's internal drives. Values rise over time (decay away
 ## from "satisfied"); various actions reduce them.
 ##
 ## Each need is on [0, 1] where 0 = fully satisfied, 1 = critical.
@@ -7,7 +7,7 @@ extends RefCounted
 ## prioritizing addressing it over normal wandering.
 ##
 ## Tracked here as plain scalars rather than fancy curves — easy to
-## read, easy to serialize if we ever want to persist Merl's state
+## read, easy to serialize if we ever want to persist Uiop's state
 ## across sessions, easy to feed into an LLM context later.
 
 var hunger: float = 0.3
@@ -31,7 +31,7 @@ func tick(delta: float, movement_factor: float = 0.0) -> void:
 	tiredness = clampf(tiredness + tired_rate * delta, 0.0, 1.0)
 	curiosity = clampf(curiosity + curiosity_rate * delta, 0.0, 1.0)
 
-# Action results — call these when Merl does something satisfying.
+# Action results — call these when Uiop does something satisfying.
 func eat(amount: float = 0.45) -> void:
 	hunger = maxf(0.0, hunger - amount)
 

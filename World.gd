@@ -94,11 +94,11 @@ func get_terrain_height(x: float, z: float) -> float:
 # them to flatten, TreeSystem queries them to skip placement, and
 # OriginBase uses them for layout.
 # ---------------------------------------------------------------------
-const BASE_HALF_WIDTH: float = 10.0        # X half-extent of flat area
-const BASE_HALF_LENGTH: float = 70.0       # Z half-extent (runway runs along Z)
+const BASE_HALF_WIDTH: float = 30.0        # X half-extent of flat area — widened so takeoff has clearance
+const BASE_HALF_LENGTH: float = 100.0      # Z half-extent (runway runs along Z)
 const BASE_HEIGHT: float = 2.0             # terrain elevation inside the footprint
-const BASE_BLEND_MARGIN: float = 15.0      # smooth fade from BASE_HEIGHT to natural
-const BASE_BIOME_RADIUS: float = 100.0     # forest-biome override radius (squared check)
+const BASE_BLEND_MARGIN: float = 35.0      # smooth fade from BASE_HEIGHT to natural — wider so you don't climb into a wall
+const BASE_BIOME_RADIUS: float = 180.0     # biome override radius — matches the wider flat zone
 
 func is_in_base_core(x: float, z: float) -> bool:
 	return abs(x) <= BASE_HALF_WIDTH and abs(z) <= BASE_HALF_LENGTH

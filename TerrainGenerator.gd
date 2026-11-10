@@ -3,7 +3,7 @@ extends Node3D
 # Terrain generation parameters
 @export var chunk_size: int = 128  # Size of each chunk
 # Chunks in a square of radius `permanent_chunk_radius` around origin are
-# built at LOD 0 at startup and never unloaded. Merl (the opossum agent)
+# built at LOD 0 at startup and never unloaded. Uiop (the opossum agent)
 # roams inside this zone and relies on it always being fully loaded.
 @export var permanent_chunk_radius: int = 1    # 3x3 = ~384m x 384m at chunk_size 128
 @export var view_distance: int = 1  # Legacy — used only for trees (kept close)
@@ -31,7 +31,7 @@ extends Node3D
 @export var biome_scale: float = 0.005  # Scale of biome transitions
 # Add tree system to export variables (add near the top with other export variables)
 @export var enable_trees: bool = true
-@export var tree_density: float = 0.5  # Trees per 100 square units
+@export var tree_density: float = 0.2  # Trees per 100 square units
 
 # Water settings
 @export var enable_water: bool = true
@@ -137,13 +137,13 @@ func _ready():
 		add_child(tree_timer)
 		tree_timer.timeout.connect(func(): initialize_tree_system())
 
-	# Spawn Merl (the opossum agent) after terrain + base are in place.
-	var merl_timer := Timer.new()
-	merl_timer.one_shot = true
-	merl_timer.wait_time = 0.8
-	merl_timer.autostart = true
-	add_child(merl_timer)
-	merl_timer.timeout.connect(func(): _spawn_merl())
+	# Spawn Uiop (the opossum agent) after terrain + base are in place.
+	var uiop_timer := Timer.new()
+	uiop_timer.one_shot = true
+	uiop_timer.wait_time = 0.8
+	uiop_timer.autostart = true
+	add_child(uiop_timer)
+	uiop_timer.timeout.connect(func(): _spawn_uiop())
 
 func _process(delta):
 	# Drain the finalize queue first — priority-sort by distance to the
@@ -243,8 +243,8 @@ func add_plane_to_scene():
 	plane.global_transform = Transform3D(Basis.IDENTITY, spawn_origin)
 	add_child(plane)
 
-func _spawn_merl() -> void:
-	# Food first — Merl's perception needs the spawner to exist when
+func _spawn_uiop() -> void:
+	# Food first — Uiop's perception needs the spawner to exist when
 	# he does his first scan.
 	var spawner_script := load("res://agents/FoodSpawner.gd") as GDScript
 	if spawner_script != null:
@@ -254,19 +254,19 @@ func _spawn_merl() -> void:
 		spawner.home_radius = float(permanent_chunk_radius) * float(chunk_size) * 0.85
 		add_child(spawner)
 
-	var merl_packed := load("res://agents/Merl.tscn") as PackedScene
-	if merl_packed == null:
-		push_warning("TerrainGenerator: Merl.tscn failed to load")
+	var uiop_packed := load("res://agents/Uiop.tscn") as PackedScene
+	if uiop_packed == null:
+		push_warning("TerrainGenerator: Uiop.tscn failed to load")
 		return
-	var merl := merl_packed.instantiate()
-	merl.name = "Merl"
-	merl.home_center = Vector3.ZERO
-	merl.home_radius = float(permanent_chunk_radius) * float(chunk_size) * 0.9
+	var uiop := uiop_packed.instantiate()
+	uiop.name = "Uiop"
+	uiop.home_center = Vector3.ZERO
+	uiop.home_radius = float(permanent_chunk_radius) * float(chunk_size) * 0.9
 	var spawn_x: float = 25.0
 	var spawn_z: float = 15.0
 	var ground: float = get_terrain_height(spawn_x, spawn_z)
-	merl.position = Vector3(spawn_x, ground + 0.5, spawn_z)
-	add_child(merl)
+	uiop.position = Vector3(spawn_x, ground + 0.5, spawn_z)
+	add_child(uiop)
 
 func _spawn_origin_base() -> void:
 	var base_packed := load("res://OriginBase.tscn") as PackedScene
@@ -638,8 +638,12 @@ func get_terrain_height(x: float, z: float) -> float:
 func determine_biome(world_position: Vector2) -> int:
 	# Force forest around the origin so the base always sits in a cozy
 	# green patch, regardless of what the biome noise rolled.
+	# Base area: desert biome so the airport sits on flat sandy ground
+	# with sparse vegetation. Desert's height adjustment is base*0.6 +
+	# small dune noise — already fairly flat, which pairs well with the
+	# runway flatten.
 	if typeof(World) != TYPE_NIL and World.is_in_base_biome(world_position.x, world_position.y):
-		return BiomeType.TEMPERATE_FOREST
+		return BiomeType.DESERT
 	if not enable_biomes:
 		return BiomeType.TEMPERATE_FOREST
 	

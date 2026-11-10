@@ -168,6 +168,8 @@ var _mat_metal: StandardMaterial3D
 var _mat_rubber: StandardMaterial3D
 var _mat_blade: StandardMaterial3D
 var _mat_glass: StandardMaterial3D
+var _mat_cowl: StandardMaterial3D
+var _mat_frame: StandardMaterial3D
 
 @onready var entry_area: Area3D = $EntryArea
 
@@ -646,11 +648,14 @@ func _init_materials() -> void:
 	_mat_metal = _make_mat(Color(0.75, 0.75, 0.78), 0.3, 0.6)
 	_mat_rubber = _make_mat(Color(0.12, 0.12, 0.12), 0.9, 0.0)
 	_mat_blade = _make_mat(Color(0.08, 0.08, 0.08), 0.6, 0.2)
+	_mat_cowl = _make_mat(Color(0.55, 0.1, 0.1), 0.35, 0.25)
+	_mat_frame = _make_mat(Color(0.15, 0.14, 0.13), 0.5, 0.3)
 	_mat_glass = StandardMaterial3D.new()
-	_mat_glass.albedo_color = Color(0.4, 0.55, 0.7, 0.35)
+	_mat_glass.albedo_color = Color(0.45, 0.6, 0.72, 0.4)
 	_mat_glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_mat_glass.metallic = 0.4
-	_mat_glass.roughness = 0.1
+	_mat_glass.metallic = 0.5
+	_mat_glass.roughness = 0.08
+	_mat_glass.refraction_enabled = false
 
 static func _make_mat(c: Color, roughness: float, metallic: float) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
@@ -678,6 +683,75 @@ static func _cyl(radius_top: float, radius_bot: float, height: float, mat: Stand
 	mi.material_override = mat
 	return mi
 
+static func _sphere(radius: float, mat: StandardMaterial3D, rings: int = 8, segments: int = 12) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var mesh := SphereMesh.new()
+	mesh.radius = radius
+	mesh.height = radius * 2.0
+	mesh.rings = rings
+	mesh.radial_segments = segments
+	mi.mesh = mesh
+	mi.material_override = mat
+	return mi
+
+static func _prism(size: Vector3, mat: StandardMaterial3D, left_to_right: float = 0.5) -> MeshInstance3D:
+	# PrismMesh: a wedge. left_to_right=0.5 centers the apex, 0=sloped
+	# from the back (large) to a point at the front, etc.
+	var mi := MeshInstance3D.new()
+	var mesh := PrismMesh.new()
+	mesh.size = size
+	mesh.left_to_right = left_to_right
+	mi.mesh = mesh
+	mi.material_override = mat
+	return mi
+
+static func _capsule(radius: float, height: float, mat: StandardMaterial3D, segments: int = 12) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var mesh := CapsuleMesh.new()
+	mesh.radius = radius
+	mesh.height = height
+	mesh.radial_segments = segments
+	mesh.rings = 4
+	mi.mesh = mesh
+	mi.material_override = mat
+	return mi
+
+# Build a wing panel with a rounded leading edge and stepped trailing
+# taper. Returns a Node3D pivot at the wing root (inboard edge) so the
+# caller can position + dihedral it with a single transform. The panel
+# extends in +X from the pivot.
+func _build_wing_panel(span: float, chord: float, thickness: float, tip_round: bool) -> Node3D:
+	var pivot := Node3D.new()
+	var le_round: float = thickness * 0.5
+	var te_taper_c: float = chord * 0.22
+	var main_c: float = chord - le_round - te_taper_c
+	# Main flat slab (constant thickness, ~70% of chord).
+	var main := _box(Vector3(span, thickness, main_c), _mat_wing)
+	main.position = Vector3(span * 0.5, 0, -chord * 0.5 + le_round + main_c * 0.5)
+	pivot.add_child(main)
+
+	# Rounded leading edge — a cylinder along the span.
+	var le := _cyl(thickness * 0.5, thickness * 0.5, span, _mat_wing, 10)
+	le.rotation_degrees.z = 90.0
+	le.position = Vector3(span * 0.5, 0, -chord * 0.5 + le_round)
+	pivot.add_child(le)
+
+	# Trailing-edge taper: a thinner slab aft of the main one to visually
+	# narrow the wing toward the TE without fighting PrismMesh's quirky
+	# orientation.
+	var te := _box(Vector3(span, thickness * 0.5, te_taper_c), _mat_wing)
+	te.position = Vector3(span * 0.5, 0, -chord * 0.5 + le_round + main_c + te_taper_c * 0.5)
+	pivot.add_child(te)
+
+	# Rounded wing tip (outboard end).
+	if tip_round:
+		var tip := _sphere(thickness * 0.6, _mat_wing, 6, 10)
+		tip.scale = Vector3(1.0, 1.0, chord / (thickness * 1.2))
+		tip.position = Vector3(span, 0, 0)
+		pivot.add_child(tip)
+
+	return pivot
+
 func _build_visuals() -> void:
 	_build_fuselage()
 	_build_wings_from_spec()
@@ -686,91 +760,235 @@ func _build_visuals() -> void:
 	_build_gear()
 
 func _build_fuselage() -> void:
-	var body := _box(Vector3(1.0, 1.0, 4.0), _mat_fuselage)
-	body.position = Vector3(0, 0.1, 0.2)
-	add_child(body)
+	# A high-wing bush plane fuselage, built as a short stack of
+	# cross-section cylinders along Z plus a cockpit canopy on top and a
+	# red engine cowl at the nose.
+	#
+	# Z layout (nose = -Z):
+	#   -2.6 .. -1.6   engine cowl
+	#   -1.6 ..  1.2   main cabin (constant cross-section)
+	#    1.2 ..  2.9   tapered tail cone
+	#
+	# The "cylinders" are stretched vertically (scale.y > 1) so the cross-
+	# section reads as a slightly tall oval rather than round.
 
-	var belly := _box(Vector3(0.9, 0.5, 4.2), _mat_fuselage)
-	belly.position = Vector3(0, -0.3, 0.2)
+	# Main cabin: three stacked segments so the lighting breaks up a bit.
+	var cabin_segments: Array = [
+		{ "z": -1.2, "len": 1.0, "r": 0.58 },
+		{ "z": -0.2, "len": 1.0, "r": 0.60 },
+		{ "z":  0.75, "len": 0.9, "r": 0.55 },
+	]
+	for s in cabin_segments:
+		var seg := _cyl(s.r, s.r, s.len, _mat_fuselage, 14)
+		seg.rotation_degrees.x = 90.0
+		seg.scale = Vector3(1.0, 1.0, 1.1)    # slight vertical oval
+		seg.position = Vector3(0, 0.1, s.z)
+		add_child(seg)
+
+	# Belly fairing — the flat lower section where the main gear mounts.
+	var belly := _box(Vector3(0.9, 0.35, 3.0), _mat_fuselage)
+	belly.position = Vector3(0, -0.45, -0.3)
 	add_child(belly)
 
-	var tail_cone := _box(Vector3(0.55, 0.55, 1.6), _mat_fuselage)
-	tail_cone.position = Vector3(0, 0.25, 2.1)
+	# Tapered tail cone — a cylinder that shrinks from fuselage radius to
+	# the tail boom radius. Oriented along Z.
+	var tail_cone := _cyl(0.18, 0.55, 1.7, _mat_fuselage, 14)
+	tail_cone.rotation_degrees.x = -90.0  # tip (top_radius) points aft (+Z)
+	tail_cone.scale = Vector3(1.0, 1.0, 1.1)
+	tail_cone.position = Vector3(0, 0.15, 2.05)
 	add_child(tail_cone)
 
-	var cowl := _box(Vector3(1.05, 1.0, 1.0), _mat_accent)
+	# Engine cowl (red). Slightly wider than the fuselage, tapered toward
+	# the nose, with a visible intake recess on the lower front.
+	var cowl := _cyl(0.55, 0.62, 1.0, _mat_cowl, 14)
+	cowl.rotation_degrees.x = -90.0  # smaller radius forward
+	cowl.scale = Vector3(1.0, 1.0, 1.05)
 	cowl.position = Vector3(0, 0.1, -2.1)
 	add_child(cowl)
 
-	var canopy := MeshInstance3D.new()
-	var canopy_mesh := BoxMesh.new()
-	canopy_mesh.size = Vector3(0.9, 0.7, 1.8)
-	canopy.mesh = canopy_mesh
-	canopy.material_override = _mat_glass
-	canopy.position = Vector3(0, 0.9, -0.5)
-	add_child(canopy)
+	# Cowl cheeks — small bulges on either side to break up the smooth
+	# cylinder (where the cylinder-head cooling scoops sit).
+	for side in [-1.0, 1.0]:
+		var cheek := _sphere(0.18, _mat_cowl, 6, 8)
+		cheek.position = Vector3(side * 0.5, 0.05, -2.1)
+		cheek.scale = Vector3(1.0, 0.8, 1.4)
+		add_child(cheek)
 
-	var stripe := _box(Vector3(1.01, 0.12, 3.8), _mat_accent)
-	stripe.position = Vector3(0, 0.1, 0.0)
-	add_child(stripe)
+	# Prop backplate — a thin disk at the front of the cowl so the
+	# propeller has something to visibly attach to.
+	var backplate := _cyl(0.5, 0.5, 0.08, _mat_frame, 14)
+	backplate.rotation_degrees.x = 90.0
+	backplate.position = Vector3(0, 0.1, -2.63)
+	add_child(backplate)
+
+	# Air intake slot on the lower front of the cowl (dark recess).
+	var intake := _box(Vector3(0.6, 0.12, 0.18), _mat_frame)
+	intake.position = Vector3(0, -0.22, -2.55)
+	add_child(intake)
+
+	# Firewall / landing light panel between cowl and windshield.
+	var firewall := _box(Vector3(1.08, 0.9, 0.08), _mat_fuselage)
+	firewall.position = Vector3(0, 0.1, -1.6)
+	add_child(firewall)
+
+	# ---------------- Cockpit canopy ----------------
+	# Windshield (steeply raked), roof, and two side windows. The pilot
+	# sits at y≈0.7, z≈-0.5; the camera mount is at y=1.2, z=-1.6.
+
+	# Windshield: a thin glass slab tilted so the top leans aft.
+	var windshield := _box(Vector3(0.9, 0.95, 0.06), _mat_glass)
+	windshield.rotation_degrees.x = -32.0   # top aft, bottom forward
+	windshield.position = Vector3(0, 0.95, -1.3)
+	add_child(windshield)
+
+	# Windshield frame (thin outline around the glass).
+	var ws_frame_top := _box(Vector3(0.92, 0.05, 0.06), _mat_frame)
+	ws_frame_top.rotation_degrees.x = -32.0
+	ws_frame_top.position = Vector3(0, 0.95 + 0.47 * cos(deg_to_rad(32.0)), -1.3 + 0.47 * sin(deg_to_rad(32.0)))
+	add_child(ws_frame_top)
+
+	# Center windshield post.
+	var ws_center := _box(Vector3(0.04, 0.95, 0.06), _mat_frame)
+	ws_center.rotation_degrees.x = -32.0
+	ws_center.position = Vector3(0, 0.95, -1.3)
+	add_child(ws_center)
+
+	# Roof — flat top of the cabin, between windshield and back window.
+	var roof := _box(Vector3(0.9, 0.08, 1.4), _mat_fuselage)
+	roof.position = Vector3(0, 1.22, -0.2)
+	add_child(roof)
+
+	# Side windows (both sides) — slightly inset.
+	for side in [-1.0, 1.0]:
+		var side_win := _box(Vector3(0.04, 0.5, 1.4), _mat_glass)
+		side_win.position = Vector3(side * 0.58, 0.95, -0.4)
+		add_child(side_win)
+
+		# Window frame outline (thin strips top/bottom).
+		var frame_top := _box(Vector3(0.06, 0.06, 1.5), _mat_frame)
+		frame_top.position = Vector3(side * 0.59, 1.18, -0.4)
+		add_child(frame_top)
+		var frame_bot := _box(Vector3(0.06, 0.06, 1.5), _mat_frame)
+		frame_bot.position = Vector3(side * 0.59, 0.69, -0.4)
+		add_child(frame_bot)
+
+		# Door seam (vertical strip in the middle of the side).
+		var door_seam := _box(Vector3(0.05, 0.6, 0.04), _mat_frame)
+		door_seam.position = Vector3(side * 0.59, 0.4, -0.3)
+		add_child(door_seam)
+
+	# Rear window — slanted downward at the back of the cabin.
+	var rear_win := _box(Vector3(0.85, 0.6, 0.05), _mat_glass)
+	rear_win.rotation_degrees.x = 35.0
+	rear_win.position = Vector3(0, 0.95, 0.65)
+	add_child(rear_win)
+
+	# ---------------- Trim stripes ----------------
+	# Classic cheatline along both sides of the fuselage.
+	for side in [-1.0, 1.0]:
+		var stripe := _box(Vector3(0.04, 0.08, 3.6), _mat_accent)
+		stripe.position = Vector3(side * 0.6, 0.2, 0.1)
+		add_child(stripe)
 
 func _build_wings_from_spec() -> void:
 	var half_span: float = spec.main_wing_half_span
 	var chord: float = spec.main_wing_chord
-	var thickness: float = 0.15
+	var thickness: float = 0.16
 	var dihedral_deg: float = spec.main_wing_dihedral_deg
 	var root_y: float = spec.main_wing_y
 	var wing_offset_z: float = spec.main_wing_z
 
-	var left_wing := _box(Vector3(half_span, thickness, chord), _mat_wing)
-	left_wing.position = Vector3(-half_span * 0.5, root_y, wing_offset_z)
-	left_wing.rotation_degrees.z = dihedral_deg
+	# Left wing panel: pivot at the fuselage root. Scale -X to mirror.
+	var left_wing := _build_wing_panel(half_span, chord, thickness, true)
+	left_wing.scale = Vector3(-1.0, 1.0, 1.0)
+	left_wing.position = Vector3(0, root_y, wing_offset_z)
+	left_wing.rotation_degrees.z = -dihedral_deg
 	add_child(left_wing)
 
-	var right_wing := _box(Vector3(half_span, thickness, chord), _mat_wing)
-	right_wing.position = Vector3(half_span * 0.5, root_y, wing_offset_z)
+	# Right wing panel.
+	var right_wing := _build_wing_panel(half_span, chord, thickness, true)
+	right_wing.position = Vector3(0, root_y, wing_offset_z)
 	right_wing.rotation_degrees.z = -dihedral_deg
 	add_child(right_wing)
 
-	var fairing := _box(Vector3(1.0, 0.25, chord * 0.8), _mat_fuselage)
-	fairing.position = Vector3(0, root_y - 0.05, wing_offset_z)
+	# Wing-root fairing — a fatter chunk where the wings meet the roof.
+	var fairing := _box(Vector3(1.0, 0.22, chord * 0.85), _mat_fuselage)
+	fairing.position = Vector3(0, root_y - 0.04, wing_offset_z)
 	add_child(fairing)
 
+	# Lift struts: a pair of angled tubes from mid-wing down to the lower
+	# fuselage (classic Cessna 172/182 look).
 	for side in [-1.0, 1.0]:
-		var strut := _cyl(0.04, 0.04, 1.6, _mat_metal, 6)
-		strut.position = Vector3(side * 2.2, root_y * 0.5 + 0.1, wing_offset_z + 0.3)
-		strut.rotation_degrees.z = -side * 30.0
-		add_child(strut)
+		var top: Vector3 = Vector3(side * half_span * 0.55, root_y - 0.05, wing_offset_z + 0.05)
+		var bot: Vector3 = Vector3(side * 0.55, -0.35, wing_offset_z + 0.1)
+		_add_strut(top, bot, 0.05, _mat_metal)
 
-	var trailing_edge_z: float = wing_offset_z + chord * 0.5
-	var ctrl_chord: float = 0.35
-	var ctrl_thickness: float = thickness * 0.9
-	var aileron_span: float = half_span * 0.4
-	var flap_span: float = half_span * 0.4
+		# Small secondary jury-strut forward of the main strut.
+		var top2: Vector3 = Vector3(side * half_span * 0.35, root_y - 0.05, wing_offset_z - 0.15)
+		var bot2: Vector3 = Vector3(side * 0.55, -0.1, wing_offset_z - 0.25)
+		_add_strut(top2, bot2, 0.035, _mat_metal)
+
+	# Wing-tip nav-light bulges (little accents at the tips).
+	var tip_light_l := _sphere(0.08, _mat_accent, 4, 8)
+	tip_light_l.position = Vector3(-half_span, root_y + sin(deg_to_rad(dihedral_deg)) * half_span, wing_offset_z - chord * 0.3)
+	add_child(tip_light_l)
+	var tip_light_r := _sphere(0.08, _mat_accent, 4, 8)
+	tip_light_r.position = Vector3(half_span, root_y + sin(deg_to_rad(dihedral_deg)) * half_span, wing_offset_z - chord * 0.3)
+	add_child(tip_light_r)
+
+	# Control surfaces at the trailing edge. The wing panel's main slab's
+	# trailing edge sits at z = wing_offset_z + (chord*0.5 - te_taper), so
+	# we hinge the control surface just aft of that, approximately at
+	# z = wing_offset_z + chord*0.5 - small inset.
+	var trailing_edge_z: float = wing_offset_z + chord * 0.5 - chord * 0.22
+	var ctrl_chord: float = chord * 0.28
+	var ctrl_thickness: float = thickness * 0.75
+	var aileron_span: float = half_span * 0.42
+	var flap_span: float = half_span * 0.42
 
 	left_aileron = _make_control_surface("LeftAileron",
-		Vector3(-half_span * 0.75, root_y, trailing_edge_z),
+		Vector3(-half_span * 0.72, root_y, trailing_edge_z),
 		Vector3(aileron_span, ctrl_thickness, ctrl_chord),
-		ctrl_chord * 0.5, dihedral_deg)
+		ctrl_chord * 0.5, -dihedral_deg)
 	add_child(left_aileron)
 
 	right_aileron = _make_control_surface("RightAileron",
-		Vector3(half_span * 0.75, root_y, trailing_edge_z),
+		Vector3(half_span * 0.72, root_y, trailing_edge_z),
 		Vector3(aileron_span, ctrl_thickness, ctrl_chord),
 		ctrl_chord * 0.5, -dihedral_deg)
 	add_child(right_aileron)
 
 	left_flap = _make_control_surface("LeftFlap",
-		Vector3(-half_span * 0.25, root_y, trailing_edge_z),
+		Vector3(-half_span * 0.26, root_y, trailing_edge_z),
 		Vector3(flap_span, ctrl_thickness, ctrl_chord),
-		ctrl_chord * 0.5, dihedral_deg)
+		ctrl_chord * 0.5, -dihedral_deg)
 	add_child(left_flap)
 
 	right_flap = _make_control_surface("RightFlap",
-		Vector3(half_span * 0.25, root_y, trailing_edge_z),
+		Vector3(half_span * 0.26, root_y, trailing_edge_z),
 		Vector3(flap_span, ctrl_thickness, ctrl_chord),
 		ctrl_chord * 0.5, -dihedral_deg)
 	add_child(right_flap)
+
+# Add a cylindrical strut between two world-local points (positions in
+# the plane's body frame). Handles orientation + length automatically.
+func _add_strut(p0: Vector3, p1: Vector3, radius: float, mat: StandardMaterial3D) -> void:
+	var mid: Vector3 = (p0 + p1) * 0.5
+	var delta: Vector3 = p1 - p0
+	var length: float = delta.length()
+	if length < 0.001:
+		return
+	var strut := _cyl(radius, radius, length, mat, 6)
+	# Default cylinder is aligned along +Y. Build a basis whose Y axis
+	# points from p0 to p1, then let the Node3D rotation follow.
+	var y_axis: Vector3 = delta / length
+	# Pick a reference not parallel to y_axis to compute a stable X axis.
+	var ref: Vector3 = Vector3.FORWARD if absf(y_axis.z) < 0.9 else Vector3.RIGHT
+	var x_axis: Vector3 = ref.cross(y_axis).normalized()
+	var z_axis: Vector3 = x_axis.cross(y_axis).normalized()
+	strut.transform.basis = Basis(x_axis, y_axis, z_axis)
+	strut.position = mid
+	add_child(strut)
 
 func _make_control_surface(n: String, hinge_pos: Vector3, mesh_size: Vector3, back_offset: float, roll_deg: float) -> Node3D:
 	var pivot := Node3D.new()
@@ -783,77 +1001,182 @@ func _make_control_surface(n: String, hinge_pos: Vector3, mesh_size: Vector3, ba
 	return pivot
 
 func _build_tail_from_spec() -> void:
-	var stab_span: float = spec.h_stab_half_span * 2.0
+	var half_span: float = spec.h_stab_half_span
 	var stab_chord: float = spec.h_stab_chord
 	var stab_thick: float = 0.12
 	var stab_y: float = spec.h_stab_y
 	var stab_z: float = spec.h_stab_z
 
-	var stab := _box(Vector3(stab_span, stab_thick, stab_chord), _mat_wing)
-	stab.position = Vector3(0, stab_y, stab_z)
-	add_child(stab)
+	# Horizontal stabilizer: build each half as a mini wing panel so it
+	# reads as an airfoil with a rounded leading edge and tapered trailing
+	# edge, matching the main wing style.
+	var h_right := _build_wing_panel(half_span, stab_chord, stab_thick, true)
+	h_right.position = Vector3(0, stab_y, stab_z)
+	add_child(h_right)
 
+	var h_left := _build_wing_panel(half_span, stab_chord, stab_thick, true)
+	h_left.scale = Vector3(-1.0, 1.0, 1.0)
+	h_left.position = Vector3(0, stab_y, stab_z)
+	add_child(h_left)
+
+	# Elevator spanning both halves, hinged at the stab's trailing edge.
+	var elev_chord: float = stab_chord * 0.35
+	var elev_span: float = half_span * 2.0 * 0.95
 	elevator = _make_control_surface("Elevator",
-		Vector3(0, stab_y, stab_z + stab_chord * 0.5),
-		Vector3(stab_span, stab_thick * 0.9, 0.35),
-		0.175, 0.0)
+		Vector3(0, stab_y, stab_z + stab_chord * 0.5 - stab_chord * 0.22),
+		Vector3(elev_span, stab_thick * 0.8, elev_chord),
+		elev_chord * 0.5, 0.0)
 	add_child(elevator)
 
+	# Vertical stabilizer (fin). Built as a swept "wing" lying in the
+	# Y-Z plane. We stand the wing-panel builder on its side: the panel
+	# naturally lives in the X-Z plane spanning +X, so rotate it so the
+	# span direction points +Y (up).
 	var fin_h: float = spec.v_stab_height
 	var fin_c: float = spec.v_stab_chord
-	var fin := _box(Vector3(0.1, fin_h, fin_c), _mat_fuselage)
-	fin.position = Vector3(0, stab_y + fin_h * 0.5, stab_z - 0.1)
-	add_child(fin)
+	# A simple box fin with a rounded leading edge, since _build_wing_panel
+	# rotation would complicate the control-surface hinge below.
+	var fin_base_z: float = stab_z - 0.15
+	var fin_le_round: float = 0.1
+	var fin_body := _box(Vector3(0.1, fin_h, fin_c * 0.75), _mat_fuselage)
+	fin_body.position = Vector3(0, stab_y + fin_h * 0.5, fin_base_z - fin_c * 0.1)
+	add_child(fin_body)
 
+	# Fin leading edge (rounded, slightly swept forward at the base).
+	var fin_le := _cyl(0.05, 0.05, fin_h, _mat_fuselage, 10)
+	fin_le.position = Vector3(0, stab_y + fin_h * 0.5, fin_base_z - fin_c * 0.1 - fin_c * 0.375)
+	add_child(fin_le)
+
+	# Dorsal fin fillet — a thin slanted slab along the fuselage spine
+	# that visually fairs into the fin's leading edge. Using a tilted box
+	# rather than a prism keeps the orientation simple.
+	var dorsal := _box(Vector3(0.08, 0.3, 0.9), _mat_fuselage)
+	dorsal.rotation_degrees.x = -22.0
+	dorsal.position = Vector3(0, stab_y + 0.0, fin_base_z - 0.55)
+	add_child(dorsal)
+
+	# Fin cap — a small horizontal fairing at the top.
+	var fin_cap := _box(Vector3(0.15, 0.08, fin_c * 0.6), _mat_fuselage)
+	fin_cap.position = Vector3(0, stab_y + fin_h + 0.04, fin_base_z)
+	add_child(fin_cap)
+
+	# Rudder: pivots about +Y at the fin's trailing edge.
 	var rudder_pivot := Node3D.new()
 	rudder_pivot.name = "Rudder"
-	rudder_pivot.position = Vector3(0, stab_y + fin_h * 0.5, stab_z - 0.1 + fin_c * 0.5)
-	var rudder_mesh := _box(Vector3(0.1, fin_h, 0.4), _mat_accent)
-	rudder_mesh.position = Vector3(0, 0, 0.2)
+	rudder_pivot.position = Vector3(0, stab_y + fin_h * 0.5, fin_base_z + fin_c * 0.2)
+	# Rudder body (red, a bit taller than the fin so it reads).
+	var rudder_mesh := _box(Vector3(0.09, fin_h * 0.95, fin_c * 0.35), _mat_accent)
+	rudder_mesh.position = Vector3(0, 0, fin_c * 0.175)
 	rudder_pivot.add_child(rudder_mesh)
+	# Thinner trailing slab to suggest the taper.
+	var rudder_te := _box(Vector3(0.045, fin_h * 0.9, fin_c * 0.12), _mat_accent)
+	rudder_te.position = Vector3(0, 0, fin_c * 0.35 + fin_c * 0.06)
+	rudder_pivot.add_child(rudder_te)
 	add_child(rudder_pivot)
 	rudder = rudder_pivot
 
 func _build_prop() -> void:
-	var spinner := _cyl(0.0, 0.25, 0.35, _mat_accent, 12)
-	spinner.position = Vector3(0, 0.1, -2.75)
-	spinner.rotation_degrees.x = 90.0
+	# Spinner cone — a tapered cylinder with the pointy end forward (-Z).
+	# Cyl default is along +Y. With rotation_degrees.x = -90, the top end
+	# (top_radius) becomes the +Z end and the bottom (bottom_radius) the
+	# -Z end. We want the small radius (point) at -Z, large at +Z.
+	var spinner := _cyl(0.22, 0.05, 0.4, _mat_cowl, 14)
+	spinner.rotation_degrees.x = -90.0
+	spinner.position = Vector3(0, 0.1, -2.78)
 	add_child(spinner)
 
+	# Spinner-to-cowl transition disc.
+	var spinner_back := _cyl(0.24, 0.24, 0.05, _mat_cowl, 14)
+	spinner_back.rotation_degrees.x = 90.0
+	spinner_back.position = Vector3(0, 0.1, -2.56)
+	add_child(spinner_back)
+
+	# Prop hub — parent for the blades. Z-rotation spins them. Placed
+	# just ahead of the spinner base so blades sweep a visible disc.
 	prop_hub = Node3D.new()
 	prop_hub.name = "PropHub"
-	prop_hub.position = Vector3(0, 0.1, -2.9)
+	prop_hub.position = Vector3(0, 0.1, -2.72)
 	add_child(prop_hub)
 
-	for i in range(3):
+	# Central hub cap (visible when stopped).
+	var hub_cap := _cyl(0.08, 0.08, 0.06, _mat_metal, 10)
+	hub_cap.rotation_degrees.x = 90.0
+	prop_hub.add_child(hub_cap)
+
+	# Two tapered blades, 180° apart. Each blade is built from a stacked
+	# box + trailing-edge prism + rounded tip so it reads as an airfoil
+	# blade rather than a flat plank. A slight pitch twist is applied.
+	var blade_length: float = 1.05
+	var blade_root_chord: float = 0.16
+	var blade_tip_chord: float = 0.08
+	for i in range(2):
 		var blade_pivot := Node3D.new()
-		blade_pivot.rotation_degrees.z = float(i) * 120.0
-		var blade_mesh := _box(Vector3(0.1, 1.1, 0.03), _mat_blade)
-		blade_mesh.position = Vector3(0, 0.6, 0)
-		blade_pivot.add_child(blade_mesh)
+		blade_pivot.rotation_degrees.z = float(i) * 180.0
+		# Root section (wider).
+		var root_sect := _box(Vector3(blade_root_chord, blade_length * 0.5, 0.025), _mat_blade)
+		root_sect.position = Vector3(0, blade_length * 0.3, 0)
+		root_sect.rotation_degrees.y = -18.0   # pitch angle at root
+		blade_pivot.add_child(root_sect)
+		# Tip section (narrower + less pitch).
+		var tip_sect := _box(Vector3(blade_tip_chord, blade_length * 0.5, 0.02), _mat_blade)
+		tip_sect.position = Vector3(0, blade_length * 0.8, 0)
+		tip_sect.rotation_degrees.y = -8.0
+		blade_pivot.add_child(tip_sect)
+		# Rounded tip.
+		var tip := _sphere(blade_tip_chord * 0.4, _mat_blade, 4, 6)
+		tip.position = Vector3(0, blade_length * 1.05, 0)
+		tip.scale = Vector3(1.0, 0.5, 0.3)
+		blade_pivot.add_child(tip)
 		prop_hub.add_child(blade_pivot)
 
 func _build_gear() -> void:
-	var main_z: float = -0.6
-	var main_x: float = 1.0
-	var gear_y: float = -0.85
+	var main_z: float = -0.7
+	var axle_x: float = 1.15
+	var ground_y: float = -0.9       # wheel contact y
+	var fuselage_attach_x: float = 0.3
+	var fuselage_attach_y: float = -0.45
 
+	# Main gear: each side has an angled strut from the lower fuselage out
+	# to the wheel hub, plus a small drag strut running forward.
 	for side in [-1.0, 1.0]:
-		var strut := _cyl(0.05, 0.05, 1.0, _mat_metal, 6)
-		strut.position = Vector3(side * main_x * 0.5, gear_y + 0.5, main_z)
-		strut.rotation_degrees.z = side * 10.0
-		add_child(strut)
+		var hub: Vector3 = Vector3(side * axle_x, ground_y + 0.08, main_z)
+		var top: Vector3 = Vector3(side * fuselage_attach_x, fuselage_attach_y, main_z)
+		_add_strut(top, hub, 0.055, _mat_metal)
 
-		var wheel := _cyl(0.3, 0.3, 0.2, _mat_rubber, 16)
-		wheel.position = Vector3(side * main_x, gear_y, main_z)
+		# Forward drag strut (small) — braces the main strut fore-aft.
+		var top_drag: Vector3 = Vector3(side * fuselage_attach_x, fuselage_attach_y - 0.05, main_z - 0.4)
+		_add_strut(top_drag, hub + Vector3(0, 0.02, -0.02), 0.03, _mat_metal)
+
+		# Wheel pant / fairing — a flattened oval around the hub (bush
+		# planes often run bare, but a small pant reads nicely).
+		var pant := _sphere(0.18, _mat_fuselage, 6, 10)
+		pant.position = Vector3(side * axle_x, ground_y + 0.08, main_z)
+		pant.scale = Vector3(1.2, 1.6, 2.4)
+		add_child(pant)
+
+		# Wheel — a chunkier tire.
+		var wheel := _cyl(0.32, 0.32, 0.22, _mat_rubber, 18)
+		wheel.position = Vector3(side * axle_x, ground_y + 0.08, main_z)
 		wheel.rotation_degrees.z = 90.0
 		add_child(wheel)
 
-	var tail_strut := _cyl(0.03, 0.03, 0.4, _mat_metal, 6)
-	tail_strut.position = Vector3(0, -0.2, 2.6)
-	add_child(tail_strut)
+		# Hubcap on the outboard face.
+		var hubcap := _cyl(0.12, 0.12, 0.04, _mat_metal, 12)
+		hubcap.position = Vector3(side * (axle_x + 0.12), ground_y + 0.08, main_z)
+		hubcap.rotation_degrees.z = 90.0
+		add_child(hubcap)
 
-	var tail_wheel := _cyl(0.12, 0.12, 0.08, _mat_rubber, 12)
-	tail_wheel.position = Vector3(0, -0.45, 2.7)
+	# Tailwheel assembly: short strut + small wheel at the back.
+	var tail_hub: Vector3 = Vector3(0, -0.5, 2.75)
+	var tail_top: Vector3 = Vector3(0, -0.05, 2.55)
+	_add_strut(tail_top, tail_hub, 0.035, _mat_metal)
+
+	var tail_wheel := _cyl(0.14, 0.14, 0.08, _mat_rubber, 12)
+	tail_wheel.position = tail_hub
 	tail_wheel.rotation_degrees.z = 90.0
 	add_child(tail_wheel)
+
+	# Tailwheel fork — little bracket holding the wheel.
+	var fork := _box(Vector3(0.1, 0.12, 0.05), _mat_metal)
+	fork.position = tail_hub + Vector3(0, 0.08, 0)
+	add_child(fork)
