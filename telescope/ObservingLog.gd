@@ -66,7 +66,7 @@ static func string_length(t: PackedFloat64Array, m: PackedFloat32Array, period: 
 	return s / var_sum
 
 ## Scans frequency uniformly between 1/p_max and 1/p_min. Returns
-## {period, theta}. Prefers the shortest period whose θ is within 10 %
+## {period, theta} plus the periodogram (θ at f0 + k·df) and candidates. Prefers the shortest period whose θ is within 10 %
 ## of the best, so integer multiples of the true period don't win.
 static func period_search(t_in: PackedFloat64Array, m_in: PackedFloat32Array, p_min: float, p_max: float) -> Dictionary:
 	var t: PackedFloat64Array = t_in.slice(0, 4096)
@@ -112,5 +112,26 @@ static func period_search(t_in: PackedFloat64Array, m_in: PackedFloat32Array, p_
 				if tj < th:
 					th = tj
 					best_f = ff
-			return {"period": 1.0 / best_f, "theta": th}
+			var out: Dictionary = {"period": 1.0 / best_f, "theta": th, "f0": f0, "df": df, "thetas": thetas}
+			out["candidates"] = _candidates(thetas, f0, df, out["period"], th)
+			return out
 	return {"period": 0.0, "theta": 1.0}
+
+## Up to 3 distinct periods [[P, θ], …]: the chosen one first, then the
+## deepest other local minima more than 3 % away from those already kept.
+static func _candidates(thetas: PackedFloat32Array, f0: float, df: float, p_best: float, th_best: float) -> Array:
+	var mins: Array = []
+	for k in range(1, thetas.size() - 1):
+		if thetas[k] <= thetas[k - 1] and thetas[k] <= thetas[k + 1]:
+			mins.append([1.0 / (f0 + k * df), thetas[k]])
+	mins.sort_custom(func(a, b): return a[1] < b[1])
+	var out: Array = [[p_best, th_best]]
+	for m in mins:
+		if out.size() >= 3:
+			break
+		var far: bool = true
+		for o in out:
+			far = far and absf(m[0] / o[0] - 1.0) > 0.03
+		if far:
+			out.append(m)
+	return out
