@@ -14,6 +14,12 @@ const Needs = preload("res://agents/Needs.gd")
 @export var turn_rate_deg_per_s: float = 180.0
 @export var gravity: float = 24.0
 @export var perception_scan_interval: float = 0.4   # seconds between full sense scans
+@export var body_scale: float = 1.6                # how big he is; scales the visuals and collider
+@export var snap_to_ground_on_ready: bool = true    # off when the spawner places him somewhere specific (his house)
+@export var catch_reach: float = 2.5                # horizontal reach from the shore to snag a fish
+@export var hunt_sight: float = 30.0                # how far he can pick out a fish to chase
+@export var catch_chance: float = 0.5               # chance each attempt lands
+@export var catch_attempt_interval: float = 1.0     # seconds between attempts
 
 # Internal
 var _brain: Variant = null
@@ -26,6 +32,7 @@ var _speed_mul: float = 0.0
 var _sniffing: bool = false
 var _state_name: String = "spawning"
 var _wiggle_phase: float = 0.0
+var _catch_cooldown: float = 0.0
 
 # Visual node refs
 var _tail_pivot: Node3D = null
@@ -42,10 +49,14 @@ func _ready() -> void:
 	_brain.home_radius = home_radius
 	_brain.memory = _memory
 	_brain.needs = _needs
+	if typeof(World) != TYPE_NIL:
+		World.time_changed.connect(func(_hours: float, day: int): _brain.set_day(day))
+	add_to_group("uiop")
 	_init_materials()
 	_build_visuals()
 	# Ground the spawn position via terrain query if available
-	global_position = _snap_to_ground(global_position)
+	if snap_to_ground_on_ready:
+		global_position = _snap_to_ground(global_position)
 
 func _physics_process(delta: float) -> void:
 	var player_pos: Vector3 = Vector3.INF * Vector3.ONE
@@ -67,13 +78,16 @@ func _physics_process(delta: float) -> void:
 	var movement_factor: float = clamp(Vector2(velocity.x, velocity.z).length() / walk_speed, 0.0, 1.0)
 	_needs.tick(delta, movement_factor)
 
+	_brain.water_level = World.get_water_level() if typeof(World) != TYPE_NIL else -1e9
+	_update_hunt_target()
 	var intent: Dictionary = _brain.tick(global_position, player_pos, delta,
 		Callable(self, "_ground_y_at"))
 
-	# Cross-boundary interactions: eating + sleeping need world/needs access
-	# that the brain itself can't do.
+	# Cross-boundary interactions: eating, sleeping and fishing need world/needs
+	# access that the brain itself can't do.
 	_handle_eating(delta)
 	_handle_napping(delta)
+	_handle_fishing(delta)
 	_target_pos = intent.target
 	_speed_mul = intent.speed_mul
 	_sniffing = intent.sniff
@@ -186,6 +200,60 @@ func _handle_napping(delta: float) -> void:
 	if _brain.is_napping_at_spot(global_position):
 		_needs.sleep(delta)
 
+func _handle_fishing(delta: float) -> void:
+	# The brain steers him to the shore. Here we check whether a fish is
+	# within reach of where he's standing and, if so, try to catch it.
+	_catch_cooldown = maxf(_catch_cooldown - delta, 0.0)
+	if not _brain.is_hunting_fish() or _catch_cooldown > 0.0:
+		return
+	var fish_system = _fish_system()
+	if fish_system == null:
+		return
+	var nearest: CharacterBody3D = null
+	var best_dist: float = catch_reach
+	for fish in fish_system.active_fish:
+		if fish == null or not is_instance_valid(fish):
+			continue
+		# Only fish under the surface are catchable.
+		if fish.global_position.y > _brain.water_level:
+			continue
+		var d: float = Vector2(fish.global_position.x - global_position.x, fish.global_position.z - global_position.z).length()
+		if d < best_dist:
+			best_dist = d
+			nearest = fish
+	if nearest == null:
+		return
+	_catch_cooldown = catch_attempt_interval
+	if randf() < catch_chance:
+		_memory.forget("fish_%d" % nearest.get_instance_id())
+		fish_system.catch_fish(nearest)
+		_brain.on_fish_caught()
+
+func _update_hunt_target() -> void:
+	# Track the nearest underwater fish from its live position, so the chase
+	# follows the fish as it swims.
+	_brain.has_hunt_target = false
+	var fish_system = _fish_system()
+	if fish_system == null:
+		return
+	var best: float = hunt_sight
+	for fish in fish_system.active_fish:
+		if fish == null or not is_instance_valid(fish) or fish.global_position.y > _brain.water_level:
+			continue
+		var d: float = Vector2(fish.global_position.x - global_position.x, fish.global_position.z - global_position.z).length()
+		if d < best:
+			best = d
+			_brain.has_hunt_target = true
+			_brain.hunt_target_pos = fish.global_position
+
+func _fish_system():
+	if typeof(World) == TYPE_NIL:
+		return null
+	var water = World.get_water_system()
+	if water == null or not "fish_system" in water:
+		return null
+	return water.fish_system
+
 func _ground_y_at(x: float, z: float) -> float:
 	if _terrain != null:
 		return _terrain.get_terrain_height(x, z)
@@ -228,6 +296,7 @@ func _build_visuals() -> void:
 	# 14cm tall; tail adds another 40cm.
 	var rig := Node3D.new()
 	rig.name = "OpossumRig"
+	rig.scale = Vector3.ONE * body_scale
 	add_child(rig)
 
 	# ---- Body (capsule along Z) ----
@@ -375,9 +444,9 @@ func _build_visuals() -> void:
 	# ---- Collision shape (capsule roughly matching body) ----
 	var cs := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
-	cap.radius = 0.11
-	cap.height = 0.5
+	cap.radius = 0.11 * body_scale
+	cap.height = 0.5 * body_scale
 	cs.shape = cap
 	cs.rotation.x = PI * 0.5
-	cs.position = Vector3(0, 0.14, 0)
+	cs.position = Vector3(0, 0.14 * body_scale, 0)
 	add_child(cs)

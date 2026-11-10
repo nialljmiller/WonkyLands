@@ -40,6 +40,9 @@ var lure_material: StandardMaterial3D = null
 var tail_pivot: Node3D = null           # child node used for wiggle animation
 var _wiggle_phase: float = 0.0
 var _cached_player: Node3D = null
+var _uiop: Node3D = null
+var _fleeing_predator: bool = false
+var uiop_flee_distance: float = 6.0        # Uiop is much bigger to a fish than a person, so they bolt sooner
 var _lure_update_accum: float = 0.0
 var _detection_area: Area3D = null
 var _wobble_phase: float = 0.0
@@ -109,7 +112,17 @@ func _physics_process(delta):
 	var player_too_close = false
 	var flee_dist_sq: float = flee_distance * flee_distance
 
-	if player and player.global_position.distance_squared_to(global_position) < flee_dist_sq:
+	var predator: Node3D = _predator()
+	_fleeing_predator = false
+	if predator and predator.global_position.distance_squared_to(global_position) < uiop_flee_distance * uiop_flee_distance:
+		# Uiop is after fish — bolt away from him at full speed.
+		var flee_direction = global_position - predator.global_position
+		flee_direction.y = 0
+		flee_direction = flee_direction.normalized()
+		target_position = global_position + flee_direction * wander_radius * 2
+		player_too_close = true
+		_fleeing_predator = true
+	elif player and player.global_position.distance_squared_to(global_position) < flee_dist_sq:
 		# Flee from player
 		var flee_direction = global_position - player.global_position
 		flee_direction.y = 0  # Keep at same depth
@@ -137,7 +150,7 @@ func _physics_process(delta):
 	rotation.y += angle_diff * turn_speed * delta
 
 	# Move fish towards target
-	velocity = direction * swim_speed
+	velocity = direction * (swim_speed * flee_swim_multiplier if _fleeing_predator else swim_speed)
 
 	# Apply small vertical wobble for natural movement. Phase offset
 	# per-instance so fish don't all bob in sync (initial_position is
@@ -171,6 +184,13 @@ func _physics_process(delta):
 			_update_lure_emission(_lure_update_accum)
 			_lure_update_accum = 0.0
 
+
+# Uiop is the only thing that hunts fish. Found through the group so fish
+# don't need a direct reference to him.
+func _predator() -> Node3D:
+	if not is_instance_valid(_uiop):
+		_uiop = get_tree().get_first_node_in_group("uiop") as Node3D
+	return _uiop
 
 func create_fish_mesh():
 	_remove_existing_mesh()

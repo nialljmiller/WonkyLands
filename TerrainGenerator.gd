@@ -5,7 +5,7 @@ extends Node3D
 # Chunks in a square of radius `permanent_chunk_radius` around origin are
 # built at LOD 0 at startup and never unloaded. Uiop (the opossum agent)
 # roams inside this zone and relies on it always being fully loaded.
-@export var permanent_chunk_radius: int = 1    # 3x3 = ~384m x 384m at chunk_size 128
+@export var permanent_chunk_radius: int = 2    # 5x5 = ~640m x 640m at chunk_size 128
 @export var view_distance: int = 1  # Legacy — used only for trees (kept close)
 @export var terrain_view_distance: int = 16  # Terrain mesh ring. Covered by LOD.
 @export var water_view_distance: int = 8     # Water plane ring.
@@ -32,6 +32,7 @@ extends Node3D
 # Add tree system to export variables (add near the top with other export variables)
 @export var enable_trees: bool = true
 @export var tree_density: float = 0.2  # Trees per 100 square units
+@export var enable_scatter: bool = true  # Rocks, bushes, flowers and grass per biome (Scatter.gd)
 
 # Water settings
 @export var enable_water: bool = true
@@ -136,6 +137,12 @@ func _ready():
 		tree_timer.autostart = true
 		add_child(tree_timer)
 		tree_timer.timeout.connect(func(): initialize_tree_system())
+
+	if enable_scatter:
+		var scatter: Node3D = load("res://Scatter.gd").new()
+		scatter.name = "Scatter"
+		scatter.terrain_generator = self
+		add_child(scatter)
 
 	# Spawn Uiop (the opossum agent) after terrain + base are in place.
 	var uiop_timer := Timer.new()
@@ -261,11 +268,12 @@ func _spawn_uiop() -> void:
 	var uiop := uiop_packed.instantiate()
 	uiop.name = "Uiop"
 	uiop.home_center = Vector3.ZERO
-	uiop.home_radius = float(permanent_chunk_radius) * float(chunk_size) * 0.9
-	var spawn_x: float = 25.0
-	var spawn_z: float = 15.0
-	var ground: float = get_terrain_height(spawn_x, spawn_z)
-	uiop.position = Vector3(spawn_x, ground + 0.5, spawn_z)
+	# Inscribed circle of the permanent square (its edge is radius + half a chunk), with a margin.
+	uiop.home_radius = (float(permanent_chunk_radius) + 0.5) * float(chunk_size) * 0.9
+	# He starts inside his house, standing on the floor.
+	var house: GDScript = load("res://OriginBase.gd")
+	uiop.snap_to_ground_on_ready = false
+	uiop.position = Vector3(house.CABIN_X, house.cabin_floor_top() + 0.3, house.CABIN_Z)
 	add_child(uiop)
 
 func _spawn_origin_base() -> void:

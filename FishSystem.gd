@@ -199,3 +199,13 @@ func clear_fish_chunk(chunk_pos: Vector2) -> void:
 	for i in range(_pending_fish_spawns.size() - 1, -1, -1):
 		if _pending_fish_spawns[i].get("chunk_pos", Vector2.ZERO) == chunk_pos:
 			_pending_fish_spawns.remove_at(i)
+
+# Removes a single fish that something ate. Same bookkeeping as a chunk
+# teardown, just for one fish.
+func catch_fish(fish: CharacterBody3D) -> void:
+	if fish == null or not is_instance_valid(fish):
+		return
+	active_fish.erase(fish)
+	for chunk_pos in fish_chunks:
+		fish_chunks[chunk_pos].erase(fish)
+	fish.queue_free()

@@ -16,7 +16,7 @@ extends RefCounted
 
 const Perception = preload("res://agents/Perception.gd")
 
-enum State { WANDER, INVESTIGATE_PLAYER, FLEEING, RESTING, OBSESSED, HIDING_FROM_PLANE, EATING, NAPPING }
+enum State { WANDER, INVESTIGATE_PLAYER, FLEEING, RESTING, OBSESSED, HIDING_FROM_PLANE, EATING, NAPPING, HUNTING_FISH }
 
 # Where the opossum is allowed to roam (soft centre + hard radius).
 var home_center: Vector3 = Vector3.ZERO
@@ -31,6 +31,24 @@ var wander_min_dwell: float = 2.0                 # min pause at a wander target
 var wander_max_dwell: float = 5.0
 var obsession_min_seconds: float = 20.0
 var obsession_max_seconds: float = 50.0
+var fish_hunt_min_seconds: float = 25.0           # how long he keeps at it before he gives up and wanders
+var fish_hunt_max_seconds: float = 45.0
+var shore_samples: int = 24                       # resolution of the walk-to-shore check
+# Fishing is his main goal. Once he's caught more than this many in a day,
+# he stops hunting and just chills: slow wandering, lots of resting.
+var chill_after_catches: int = 1
+
+# Set by the controller each tick. Fish sit under this surface, so anything
+# below it is water he can't walk on.
+var water_level: float = -1e9
+var catches_today: int = 0
+var _day: int = -1
+
+# Live fish target, set by the controller every tick from the real fish
+# positions (not the memory snapshot, which lags behind a fast-swimming fish).
+var has_hunt_target: bool = false
+var hunt_target_pos: Vector3 = Vector3.ZERO
+var hunt_speed_mul: float = 1.5             # he runs when he's after a fish
 
 var _state: int = State.WANDER
 var _state_timer: float = 0.0
@@ -89,7 +107,9 @@ func tick(self_pos: Vector3, player_pos: Vector3, delta: float, ground_y_at: Cal
 	# --- Needs-driven transitions ---
 	# Only override the "base layer" states; if he's actively hiding or
 	# fleeing, deal with that first.
-	if _state == State.WANDER or _state == State.RESTING:
+	# Hunting fish counts as base layer too, so hunger and tiredness can
+	# still pull him off the lake.
+	if _state == State.WANDER or _state == State.RESTING or _state == State.HUNTING_FISH:
 		if needs != null:
 			if needs.is_hungry():
 				var food_mem: Dictionary = memory.most_salient(Perception.PerceptKind.FOOD) if memory != null else {}
@@ -98,19 +118,33 @@ func tick(self_pos: Vector3, player_pos: Vector3, delta: float, ground_y_at: Cal
 			elif needs.is_tired():
 				_enter_napping(self_pos, ground_y_at)
 
+	# --- Fishing (main goal) ---
+	# Start hunting whenever he's idle and can see a fish, unless he's
+	# already chilled out for the day.
+	if (_state == State.WANDER or _state == State.RESTING) and not is_chilled():
+		if memory != null and memory.most_salient(Perception.PerceptKind.FISH).size() > 0:
+			_enter_fish_hunt()
+
 	# --- Timed transitions (state has run its course) ---
 	if _state_timer <= 0.0:
 		match _state:
 			State.WANDER:
 				# Occasionally obsess over something random instead of
-				# just wandering onward.
-				if _rng.randf() < 0.18:
+				# just wandering onward. When chilled he rests a lot more
+				# and doesn't go on obsessions.
+				if not is_chilled() and _rng.randf() < 0.18:
 					_enter_obsessed(self_pos, ground_y_at)
-				elif _rng.randf() < 0.1:
+				elif _rng.randf() < (0.5 if is_chilled() else 0.1):
 					_enter_resting()
 				else:
 					_pick_wander_target(ground_y_at)
 					_state_timer = _rng.randf_range(wander_min_dwell, wander_max_dwell)
+			State.HUNTING_FISH:
+				# Gave up on the fish (out of sight, unreachable, or just
+				# ran out of patience) — back to wandering.
+				_state = State.WANDER
+				_pick_wander_target(ground_y_at)
+				_state_timer = _rng.randf_range(wander_min_dwell, wander_max_dwell)
 			State.INVESTIGATE_PLAYER:
 				# Lost interest — resume wandering
 				_state = State.WANDER
@@ -152,7 +186,16 @@ func tick(self_pos: Vector3, player_pos: Vector3, delta: float, ground_y_at: Cal
 	# --- Compute per-tick intent for current state ---
 	match _state:
 		State.WANDER:
-			return _intent(_current_target, 0.65, "wander", false)
+			return _intent(_current_target, 0.25 if is_chilled() else 0.65, "wander", false)
+		State.HUNTING_FISH:
+			if not has_hunt_target:
+				# Fish out of sight — drop it, the timed block returns him to wandering.
+				_state_timer = 0.0
+				return _intent(self_pos, 0.0, "idle", false)
+			# Chase: he keeps re-aiming at the fish's live position, walking
+			# the shore alongside it at a run.
+			var shore: Vector3 = _shore_point(self_pos, hunt_target_pos, ground_y_at)
+			return _intent(shore, hunt_speed_mul, "hunting_fish", true)
 		State.INVESTIGATE_PLAYER:
 			# Walk slowly toward a point a bit offset from the player
 			# (he's curious but not confrontational).
@@ -240,7 +283,12 @@ func _enter_investigate(_player_pos: Vector3) -> void:
 
 func _enter_resting() -> void:
 	_state = State.RESTING
-	_state_timer = _rng.randf_range(rest_min_seconds, rest_max_seconds)
+	var rest_mul: float = 2.0 if is_chilled() else 1.0
+	_state_timer = _rng.randf_range(rest_min_seconds, rest_max_seconds) * rest_mul
+
+func _enter_fish_hunt() -> void:
+	_state = State.HUNTING_FISH
+	_state_timer = _rng.randf_range(fish_hunt_min_seconds, fish_hunt_max_seconds)
 
 func _enter_obsessed(self_pos: Vector3, ground_y_at: Callable) -> void:
 	_state = State.OBSESSED
@@ -314,6 +362,43 @@ func _pick_wander_target(ground_y_at: Callable = Callable()) -> void:
 	if ground_y_at.is_valid():
 		p.y = ground_y_at.call(p.x, p.z)
 	_current_target = p
+
+# ---------------------------------------------------------------------
+# Fishing + day tracking
+# ---------------------------------------------------------------------
+func is_hunting_fish() -> bool:
+	return _state == State.HUNTING_FISH
+
+func is_chilled() -> bool:
+	return catches_today > chill_after_catches
+
+# Called by the controller on World.time_changed. Catch count resets when
+# the day rolls over.
+func set_day(day: int) -> void:
+	if day == _day:
+		return
+	_day = day
+	catches_today = 0
+
+# Called by the controller after a successful catch. He's done with that
+# fish, so drop back to the base layer and let the next tick decide.
+func on_fish_caught() -> void:
+	catches_today += 1
+	_state = State.WANDER
+	_state_timer = 0.0
+
+# He can't swim, so walk from where he is toward the fish and stop at the
+# last dry spot before the water. Fish sit under the surface, so that spot
+# is as close as he can get to them.
+func _shore_point(from: Vector3, fish_pos: Vector3, ground_y_at: Callable) -> Vector3:
+	var last_dry: Vector3 = from
+	for i in range(1, shore_samples + 1):
+		var p: Vector3 = from.lerp(fish_pos, float(i) / shore_samples)
+		var ground_y: float = ground_y_at.call(p.x, p.z)
+		if ground_y < water_level:
+			break
+		last_dry = Vector3(p.x, ground_y, p.z)
+	return last_dry
 
 static func _intent(target: Vector3, speed_mul: float, state_name: String, sniff: bool) -> Dictionary:
 	return {

@@ -68,6 +68,10 @@ func most_salient(kind: int = -1) -> Dictionary:
 func count() -> int:
 	return _items.size()
 
+# Drop one remembered thing right away (e.g. a fish that was just caught).
+func forget(id: String) -> void:
+	_items.erase(id)
+
 # Read-only reference to the internal map. Callers must NOT mutate it.
 # (Previously returned a duplicate; the OBSESSED brain state calls this
 # every tick — the copy was wasted.)

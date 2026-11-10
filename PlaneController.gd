@@ -103,6 +103,10 @@ const PlaneSpec = preload("res://plane/PlaneSpec.gd")
 @export_category("Misc")
 @export var exit_offset: Vector3 = Vector3(-2.2, 0.5, -1.5)
 
+@export_category("Cockpit look")
+@export var look_sensitivity: float = 0.12       # degrees per pixel
+@export var look_pitch_limit_deg: float = 80.0
+
 @export_category("Visual deflection")
 @export var max_elevator_deflection_deg: float = 25.0
 @export var max_rudder_deflection_deg: float = 25.0
@@ -149,6 +153,13 @@ var original_camera_transform: Transform3D = Transform3D.IDENTITY
 var stored_player_visibility: bool = true
 var disabled_colliders: Array[CollisionShape3D] = []
 
+# Mouse look from the cockpit. The player's own look code is switched off
+# while seated, so the plane takes over and turns the camera mount's child.
+var _plane_camera: Camera3D = null
+var _pending_look: Vector2 = Vector2.ZERO
+var _look_yaw: float = 0.0
+var _look_pitch: float = 0.0
+
 # Throttled ground-height sample for ground effect. Terrain height
 # changes slowly as the plane moves; resampling at ~10 Hz is plenty.
 var _ground_effect_h_cached: float = 0.0
@@ -185,6 +196,12 @@ func _ready() -> void:
 	_init_materials()
 	_build_visuals()
 
+func _input(event: InputEvent) -> void:
+	if controlling_player == null:
+		return
+	if event is InputEventMouseMotion:
+		_pending_look += event.relative
+
 func _physics_process(delta: float) -> void:
 	_update_flaps(delta)
 	_update_propeller(delta)
@@ -192,6 +209,7 @@ func _physics_process(delta: float) -> void:
 
 	if controlling_player != null:
 		_attach_player_to_seat()
+		_apply_camera_look()
 		_handle_flight_input(delta)
 		_apply_flight_physics(delta)
 		if Input.is_action_just_pressed("interact"):
@@ -222,10 +240,23 @@ func _handle_flight_input(delta: float) -> void:
 func _update_flaps(delta: float) -> void:
 	flap_deployed = move_toward(flap_deployed, _flap_target, flap_deploy_speed * delta)
 
+func _apply_camera_look() -> void:
+	if _pending_look != Vector2.ZERO:
+		_look_yaw -= deg_to_rad(_pending_look.x * look_sensitivity)
+		_look_pitch -= deg_to_rad(_pending_look.y * look_sensitivity)
+		_look_pitch = clampf(_look_pitch, deg_to_rad(-look_pitch_limit_deg), deg_to_rad(look_pitch_limit_deg))
+		_pending_look = Vector2.ZERO
+	if _plane_camera != null:
+		_plane_camera.rotation = Vector3(_look_pitch, _look_yaw, 0.0)
+
 # =====================================================================
 # FLIGHT PHYSICS — lumped-force 6DOF
 # =====================================================================
 func _apply_flight_physics(delta: float) -> void:
+	# Repeated rotate_object_local calls slowly skew the basis. The body-frame
+	# math below assumes an orthonormal basis (transposed() as inverse), so
+	# re-orthonormalize every step or the flight model drifts the longer you fly.
+	global_transform = Transform3D(global_transform.basis.orthonormalized(), global_transform.origin)
 	var basis: Basis = global_transform.basis
 	var v_world: Vector3 = velocity
 	# For an orthonormal rotation basis, inverse == transpose; Godot's
@@ -580,6 +611,10 @@ func enter_plane(player: CharacterBody3D) -> void:
 
 	_attach_player_to_seat()
 
+	_pending_look = Vector2.ZERO
+	_look_yaw = 0.0
+	_look_pitch = deg_to_rad(-5.0)
+
 	var camera := controlling_player.get_node_or_null("Camera3D") as Camera3D
 	if camera != null:
 		original_camera_parent = camera.get_parent()
@@ -588,7 +623,8 @@ func enter_plane(player: CharacterBody3D) -> void:
 		camera_mount.add_child(camera)
 		camera.transform = Transform3D.IDENTITY
 		camera.position = Vector3(0, 0.6, 0)
-		camera.rotation_degrees = Vector3(-5, 0, 0)
+		camera.rotation = Vector3(_look_pitch, _look_yaw, 0.0)
+		_plane_camera = camera
 
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
@@ -602,6 +638,8 @@ func exit_plane() -> void:
 		camera_mount.remove_child(camera)
 		original_camera_parent.add_child(camera)
 		camera.transform = original_camera_transform
+	_plane_camera = null
+	_pending_look = Vector2.ZERO
 
 	player.visible = stored_player_visibility
 	player.global_position = global_transform.origin + global_transform.basis * exit_offset
@@ -793,7 +831,7 @@ func _build_fuselage() -> void:
 	# Tapered tail cone — a cylinder that shrinks from fuselage radius to
 	# the tail boom radius. Oriented along Z.
 	var tail_cone := _cyl(0.18, 0.55, 1.7, _mat_fuselage, 14)
-	tail_cone.rotation_degrees.x = -90.0  # tip (top_radius) points aft (+Z)
+	tail_cone.rotation_degrees.x = 90.0  # tip (top_radius) points aft (+Z)
 	tail_cone.scale = Vector3(1.0, 1.0, 1.1)
 	tail_cone.position = Vector3(0, 0.15, 2.05)
 	add_child(tail_cone)
@@ -905,10 +943,11 @@ func _build_wings_from_spec() -> void:
 	left_wing.rotation_degrees.z = -dihedral_deg
 	add_child(left_wing)
 
-	# Right wing panel.
+	# Right wing panel. Unmirrored, so its dihedral is the opposite sign
+	# from the mirrored left panel (which rotates -dihedral in local space).
 	var right_wing := _build_wing_panel(half_span, chord, thickness, true)
 	right_wing.position = Vector3(0, root_y, wing_offset_z)
-	right_wing.rotation_degrees.z = -dihedral_deg
+	right_wing.rotation_degrees.z = dihedral_deg
 	add_child(right_wing)
 
 	# Wing-root fairing — a fatter chunk where the wings meet the roof.
@@ -955,7 +994,7 @@ func _build_wings_from_spec() -> void:
 	right_aileron = _make_control_surface("RightAileron",
 		Vector3(half_span * 0.72, root_y, trailing_edge_z),
 		Vector3(aileron_span, ctrl_thickness, ctrl_chord),
-		ctrl_chord * 0.5, -dihedral_deg)
+		ctrl_chord * 0.5, dihedral_deg)
 	add_child(right_aileron)
 
 	left_flap = _make_control_surface("LeftFlap",
@@ -967,7 +1006,7 @@ func _build_wings_from_spec() -> void:
 	right_flap = _make_control_surface("RightFlap",
 		Vector3(half_span * 0.26, root_y, trailing_edge_z),
 		Vector3(flap_span, ctrl_thickness, ctrl_chord),
-		ctrl_chord * 0.5, -dihedral_deg)
+		ctrl_chord * 0.5, dihedral_deg)
 	add_child(right_flap)
 
 # Add a cylindrical strut between two world-local points (positions in
@@ -1077,11 +1116,11 @@ func _build_tail_from_spec() -> void:
 
 func _build_prop() -> void:
 	# Spinner cone — a tapered cylinder with the pointy end forward (-Z).
-	# Cyl default is along +Y. With rotation_degrees.x = -90, the top end
-	# (top_radius) becomes the +Z end and the bottom (bottom_radius) the
-	# -Z end. We want the small radius (point) at -Z, large at +Z.
+	# Cyl default is along +Y. With rotation_degrees.x = 90, the top end
+	# (top_radius, the big one) points aft to +Z and the bottom end (the
+	# point) points forward to -Z.
 	var spinner := _cyl(0.22, 0.05, 0.4, _mat_cowl, 14)
-	spinner.rotation_degrees.x = -90.0
+	spinner.rotation_degrees.x = 90.0
 	spinner.position = Vector3(0, 0.1, -2.78)
 	add_child(spinner)
 

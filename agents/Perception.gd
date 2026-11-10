@@ -118,6 +118,25 @@ func scan(owner_pos: Vector3, owner_fwd_xz: Vector3, scene_root: Node) -> Array:
 						"tree_%d_%d" % [int(tp.x), int(tp.z)],
 						Sense.SIGHT))
 
+	# -----------------------------------------------------------------
+	# Fish — read from the fish system, same visibility rules as berries.
+	# Fish sit under the surface, so Uiop sees them but can't reach them
+	# without the brain steering him to the shore.
+	# -----------------------------------------------------------------
+	if typeof(World) != TYPE_NIL:
+		var water = World.get_water_system()
+		if water != null and "fish_system" in water and water.fish_system != null:
+			for fish in water.fish_system.active_fish:
+				if fish == null or not is_instance_valid(fish):
+					continue
+				var hp: Vector3 = fish.global_position
+				var hdsq: float = _horizontal_distance_sq(owner_pos, hp)
+				if hdsq < sight_sq and _in_fov(owner_pos, hp, fwd, sight_cos_half):
+					out.append(_make_percept(PerceptKind.FISH, hp,
+						_salience_sq(hdsq, sight_sq, 0.7),
+						"fish_%d" % fish.get_instance_id(),
+						Sense.SIGHT))
+
 	return out
 
 # ---------------------------------------------------------------------
