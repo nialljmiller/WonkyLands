@@ -44,7 +44,7 @@ func _process(delta: float) -> void:
 		if sf:
 			print("StarField mmi=", sf._mmi, " vis=", sf._mmi.visible if sf._mmi else null,
 				" lim=", sf.limiting_mag, " basis=", sf.global_transform.basis, " pos=", sf.global_position)
-	if (_args.has("expose") or _args.has("log")) and _t > 2.0 and not _done:
+	if (_args.has("expose") or _args.has("log") or _args.has("warp") or _args.has("click")) and _t > 2.0 and not _done:
 		_done = true
 		var obs = get_tree().root.find_child("Observatory", true, false)
 		if obs and obs.has_method("debug_drive"):

@@ -5,7 +5,7 @@ extends SceneTree
 ## the calibrated magnitude recovers the catalog value within errors,
 ## writes FITS + truth sidecar (verified separately by
 ## tests/verify_fits.py with astropy) and exercises the CSV log and the
-## PDM period search on a synthetic Algol light curve.
+## period search on a synthetic Algol light curve.
 
 const SkyCatalog = preload("res://telescope/SkyCatalog.gd")
 const SkyModel = preload("res://telescope/SkyModel.gd")
@@ -14,6 +14,9 @@ const Photometry = preload("res://telescope/Photometry.gd")
 const ObservingLog = preload("res://telescope/ObservingLog.gd")
 const TelescopePanel = preload("res://telescope/TelescopePanel.gd")
 const CoordinateTransforms = preload("res://astronomy/CoordinateTransforms.gd")
+
+# Kept apart from the player's own user://observations.
+const TEST_DIR: String = "user://test_observations"
 
 var _fail: int = 0
 
@@ -48,7 +51,7 @@ func _initialize() -> void:
 			var d: Vector2 = Photometry.differential(m, c)
 			print("  diff vs %s (%.2f): %.4f ± %.4f, truth %.4f" % [c["name"], other["mag"], d.x, d.y, truth - other["mag"]])
 			_check(absf(d.x - (truth - other["mag"])) < 5.0 * d.y + 0.02, "differential mag")
-			var path: String = TelescopePanel.write_frame_fits(f, cat)
+			var path: String = TelescopePanel.write_frame_fits(f, cat, TEST_DIR)
 			_check(path != "", "FITS written")
 			print("FITS ", ProjectSettings.globalize_path(path))
 			var bytes: int = FileAccess.get_file_as_bytes(path).size()
@@ -60,9 +63,9 @@ func _initialize() -> void:
 		"band": "R", "exptime": 30.0, "snap": snap, "npix": 256, "fov_deg": 1.0, "aperture_m": 0.08, "qe": 0.8,
 		"seeing_arcsec": 2.5, "defocus_px": 2.5, "read_noise": 8.0, "full_well": 100000.0, "seed": 5})
 	deep["target"] = {"name": "Deep field", "star": -1}
-	print("FITS ", ProjectSettings.globalize_path(TelescopePanel.write_frame_fits(deep, cat)))
+	print("FITS ", ProjectSettings.globalize_path(TelescopePanel.write_frame_fits(deep, cat, TEST_DIR)))
 
-	# PDM on a synthetic Algol light curve sampled at night-ish times.
+	# Period search on a synthetic Algol light curve sampled at night-ish times.
 	var vi: int = cat.variable_of_star(algol)
 	var period_true: float = float(cat.variables[vi]["period_days"])
 	var t := PackedFloat64Array()
@@ -75,9 +78,9 @@ func _initialize() -> void:
 		t.append(tt)
 		mags.append(cat.star_mag_at(algol, "V", tt) + rng.randfn(0.0, 0.01))
 	var t0: int = Time.get_ticks_msec()
-	var res: Dictionary = ObservingLog.pdm_search(t, mags, 0.5, 10.0)
-	print("PDM: best %.4f d (true %.4f), theta %.3f, %d ms" % [res["period"], period_true, res["theta"], Time.get_ticks_msec() - t0])
-	_check(absf(res["period"] / period_true - 1.0) < 0.005, "PDM recovers Algol period")
+	var res: Dictionary = ObservingLog.period_search(t, mags, 0.5, 10.0)
+	print("period search: best %.4f d (true %.4f), theta %.3f, %d ms" % [res["period"], period_true, res["theta"], Time.get_ticks_msec() - t0])
+	_check(absf(res["period"] / period_true - 1.0) < 0.005, "period search recovers Algol period")
 
 	print("PASS test_photometry" if _fail == 0 else "FAIL test_photometry (%d)" % _fail)
 	quit(1 if _fail > 0 else 0)

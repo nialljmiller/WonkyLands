@@ -15,6 +15,7 @@ const SkyCatalog = preload("res://telescope/SkyCatalog.gd")
 const SkyModel = preload("res://telescope/SkyModel.gd")
 const TelescopeScript = preload("res://telescope/Telescope.gd")
 const TelescopePanelScript = preload("res://telescope/TelescopePanel.gd")
+const LogPanelScript = preload("res://telescope/LogPanel.gd")
 
 const WARP_STEPS: Array = [60.0, 600.0, 3600.0]
 const USE_RANGE_M: float = 3.0
@@ -24,6 +25,7 @@ var engine = null    # AstronomyEngine, set by TerrainGenerator
 var catalog = null
 var telescope: Node3D = null
 var panel = null
+var log_panel = null
 var _layer: CanvasLayer = null
 var _hud: Label = null
 var _hint: Label = null
@@ -37,8 +39,8 @@ func _ready() -> void:
 	add_child(_layer)
 	_hud = Label.new()
 	_hud.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_hud.position = Vector2(-300, 8)
-	_hud.size = Vector2(290, 20)
+	_hud.position = Vector2(-420, 8)
+	_hud.size = Vector2(410, 40)
 	_hud.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_hud.add_theme_font_size_override("font_size", 13)
 	_hud.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0, 0.85))
@@ -59,6 +61,10 @@ func _ready() -> void:
 	panel.visible = false
 	panel.closed.connect(close_panels)
 	_layer.add_child(panel)
+	log_panel = LogPanelScript.new()
+	log_panel.visible = false
+	log_panel.closed.connect(close_panels)
+	_layer.add_child(log_panel)
 
 func _player() -> Node3D:
 	if typeof(World) == TYPE_NIL:
@@ -83,8 +89,10 @@ func _process(delta: float) -> void:
 			place_telescope()
 		if Input.is_action_just_pressed("time_warp"):
 			cycle_warp()
-		if Input.is_action_just_pressed("interact") and _near_telescope(p):
+		if Input.is_action_just_pressed("interact") and _near_telescope(p) and not _vehicle_claims(p):
 			open_panel(panel)
+		if Input.is_action_just_pressed("observing_log"):
+			open_panel(log_panel)
 	_hud_accum += delta
 	if _hud_accum >= 0.25:
 		_hud_accum = 0.0
@@ -94,6 +102,14 @@ func _input(event: InputEvent) -> void:
 	if _open_panel != null and event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
 		close_panels()
 		get_viewport().set_input_as_handled()
+
+## True if a vehicle (anything tracking a `nearby_player`, e.g. the
+## plane) will also take this F press — let it have it.
+func _vehicle_claims(p: Node3D) -> bool:
+	for n in get_parent().get_children():
+		if n != p and "nearby_player" in n and n.nearby_player == p:
+			return true
+	return false
 
 func _near_telescope(p: Node3D) -> bool:
 	return telescope != null and p != null and p.global_position.distance_to(telescope.global_position) < USE_RANGE_M
@@ -151,6 +167,8 @@ func _update_hud(p: Node3D) -> void:
 	if engine == null:
 		return
 	_hud.text = "%s UT   ×%d" % [jd_to_string(engine.current_jd), int(engine.time_scale)]
+	if panel.monitoring:
+		_hud.text += "\n" + panel.monitor_status
 	if _open_panel != null:
 		_hint.text = ""
 	elif _near_telescope(p) and _player_free(p):
@@ -178,6 +196,9 @@ static func jd_to_string(jd: float) -> String:
 # Dev hook for tests/probe.gd: place, aim and expose without input.
 # ---------------------------------------------------------------------
 func debug_drive(args: Dictionary) -> void:
+	if args.has("click"):
+		await _debug_click(args)
+		return
 	if args.has("expose"):
 		place_telescope()
 		open_panel(panel)
@@ -188,3 +209,39 @@ func debug_drive(args: Dictionary) -> void:
 		if args.has("exp"):
 			panel.set_exptime(float(args["exp"]))
 		panel.expose()
+		if args.has("monitor"):
+			panel.set_monitoring(true)
+			close_panels()
+	if args.has("warp"):
+		engine.time_scale = float(args["warp"])
+	if args.has("log"):
+		open_panel(log_panel)
+		if log_panel._target_opt.item_count > 0:
+			log_panel.find_period()
+
+## Exercise the click → comparison → differential → log → FITS path.
+func _debug_click(args: Dictionary) -> void:
+	args.erase("click")
+	debug_drive(args)
+	while panel.frame.is_empty():
+		await get_tree().create_timer(0.2).timeout
+	await get_tree().process_frame
+	var f: Dictionary = panel.frame
+	var c: float = (f["npix"] - 1) * 0.5
+	var comp: Dictionary = {}
+	for s in f["truth"]:
+		var off: float = Vector2(s["x"], s["y"]).distance_to(Vector2(c, c))
+		if off > 20.0 and s["x"] > 20 and s["y"] > 20 and s["x"] < f["npix"] - 20 and s["y"] < f["npix"] - 20 \
+				and (comp.is_empty() or s["e"] > comp["e"]):
+			comp = s
+	for target in [Vector2(comp["x"], comp["y"]), Vector2(c, c)]:
+		var ev := InputEventMouseButton.new()
+		ev.pressed = true
+		ev.button_index = MOUSE_BUTTON_LEFT
+		ev.position = panel._to_screen(target + Vector2(0.7, -0.6))
+		panel._on_view_input(ev)
+		if panel._comp.is_empty():
+			panel._set_comparison()
+	panel._log_measurement()
+	print("DEBUG_CLICK ", panel._info.get_parsed_text().replace("\n", " | "))
+	print("DEBUG_FITS ", ProjectSettings.globalize_path(panel.save_fits()))

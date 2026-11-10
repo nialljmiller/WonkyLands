@@ -42,74 +42,75 @@ static func read_all() -> Array:
 	return out
 
 # ---------------------------------------------------------------------
-# Period search — phase-dispersion minimisation (Stellingwerf 1978).
+# Period search — Lafler–Kinman string length (1965).
+# Sort the points by phase and add up the squared jumps between
+# neighbours: the right period gives a smooth curve, so a short string.
+# Unbinned, so narrow eclipses caught by a handful of points still count
+# (binned PDM smears them across bin edges).
 # ---------------------------------------------------------------------
-## θ(P) = pooled within-bin variance / total variance (lower = better).
-static func pdm_theta(t: PackedFloat64Array, m: PackedFloat32Array, period: float, nbins: int = 20) -> float:
+## θ(P) = Σ(m_{i+1} − m_i)² / Σ(m_i − m̄)² over phase order (lower = better).
+static func string_length(t: PackedFloat64Array, m: PackedFloat32Array, period: float, var_sum: float) -> float:
 	var n: int = t.size()
-	var sum := PackedFloat64Array(); sum.resize(nbins); sum.fill(0.0)
-	var sum2 := PackedFloat64Array(); sum2.resize(nbins); sum2.fill(0.0)
-	var cnt := PackedInt32Array(); cnt.resize(nbins); cnt.fill(0)
-	var tot: float = 0.0
-	var tot2: float = 0.0
+	# Sort by phase natively: phase in the high bits, index in the low 12.
+	var keys := PackedInt64Array()
+	keys.resize(n)
 	for i in n:
-		var b: int = int(fposmod(t[i] / period, 1.0) * nbins) % nbins
-		sum[b] += m[i]
-		sum2[b] += m[i] * m[i]
-		cnt[b] += 1
-		tot += m[i]
-		tot2 += m[i] * m[i]
-	var var_tot: float = (tot2 - tot * tot / n) / maxf(n - 1, 1)
-	if var_tot <= 0.0:
-		return 1.0
+		keys[i] = (int(fposmod(t[i] / period, 1.0) * 1e9) << 12) | i
+	keys.sort()
 	var s: float = 0.0
-	var dof: int = 0
-	for b in nbins:
-		if cnt[b] > 1:
-			s += sum2[b] - sum[b] * sum[b] / cnt[b]
-			dof += cnt[b] - 1
-	if dof <= 0:
-		return 1.0
-	return (s / dof) / var_tot
+	var prev: float = m[keys[n - 1] & 4095]
+	for k in n:
+		var cur: float = m[keys[k] & 4095]
+		s += (cur - prev) * (cur - prev)
+		prev = cur
+	return s / var_sum
 
 ## Scans frequency uniformly between 1/p_max and 1/p_min. Returns
 ## {period, theta}. Prefers the shortest period whose θ is within 10 %
 ## of the best, so integer multiples of the true period don't win.
-static func pdm_search(t: PackedFloat64Array, m: PackedFloat32Array, p_min: float, p_max: float) -> Dictionary:
-	if t.size() < 8:
+static func period_search(t_in: PackedFloat64Array, m_in: PackedFloat32Array, p_min: float, p_max: float) -> Dictionary:
+	var t: PackedFloat64Array = t_in.slice(0, 4096)
+	var m: PackedFloat32Array = m_in.slice(0, 4096)
+	var n: int = t.size()
+	if n < 8:
 		return {"period": 0.0, "theta": 1.0}
-	var span: float = t[t.size() - 1] - t[0]
-	for i in t.size():
-		span = maxf(span, absf(t[i] - t[0]))
+	var mean: float = 0.0
+	var t_lo: float = INF
+	var t_hi: float = -INF
+	for i in n:
+		mean += m[i]
+		t_lo = minf(t_lo, t[i])
+		t_hi = maxf(t_hi, t[i])
+	mean /= n
+	var var_sum: float = 0.0
+	for i in n:
+		var_sum += (m[i] - mean) * (m[i] - mean)
+	if var_sum <= 0.0:
+		return {"period": 0.0, "theta": 1.0}
 	var f0: float = 1.0 / p_max
 	var f1: float = 1.0 / p_min
-	# Phase drifts by span·df across the data: keep that ≲ 1/50 cycle so
+	# Phase drifts by span·df across the data: keep that ≲ 1/100 cycle so
 	# narrow eclipses are not stepped over.
-	var df: float = 0.02 / maxf(span, 1.0)
-	var nb: int = clampi(t.size() / 8, 10, 40)
-	var nsteps: int = clampi(int((f1 - f0) / df), 100, 40000)
+	var df: float = 0.01 / maxf(t_hi - t_lo, 1.0)
+	var nsteps: int = clampi(int((f1 - f0) / df), 100, 30000)
 	df = (f1 - f0) / nsteps
-	var thetas := PackedFloat32Array(); thetas.resize(nsteps + 1)
-	var best_theta: float = INF
+	var thetas := PackedFloat32Array()
+	thetas.resize(nsteps + 1)
+	var best: float = INF
 	for k in nsteps + 1:
-		var th: float = pdm_theta(t, m, 1.0 / (f0 + k * df), nb)
-		thetas[k] = th
-		best_theta = minf(best_theta, th)
-	# Highest-frequency (shortest-period) local minimum near the best.
+		thetas[k] = string_length(t, m, 1.0 / (f0 + k * df), var_sum)
+		best = minf(best, thetas[k])
 	for k in range(nsteps, -1, -1):
 		var th: float = thetas[k]
 		var lo: bool = (k == 0 or th <= thetas[k - 1]) and (k == nsteps or th <= thetas[k + 1])
-		if lo and th <= best_theta * 1.1:
-			return {"period": _refine(t, m, f0 + k * df, df, nb), "theta": th}
+		if lo and th <= best * 1.1:
+			# Refine around the grid minimum.
+			var best_f: float = f0 + k * df
+			for j in range(-10, 11):
+				var ff: float = f0 + (k + j * 0.1) * df
+				var tj: float = string_length(t, m, 1.0 / ff, var_sum)
+				if tj < th:
+					th = tj
+					best_f = ff
+			return {"period": 1.0 / best_f, "theta": th}
 	return {"period": 0.0, "theta": 1.0}
-
-static func _refine(t: PackedFloat64Array, m: PackedFloat32Array, f: float, df: float, nb: int) -> float:
-	var best_f: float = f
-	var best_th: float = pdm_theta(t, m, 1.0 / f, nb)
-	for k in range(-20, 21):
-		var ff: float = f + k * df / 10.0
-		var th: float = pdm_theta(t, m, 1.0 / ff, nb)
-		if th < best_th:
-			best_th = th
-			best_f = ff
-	return 1.0 / best_f

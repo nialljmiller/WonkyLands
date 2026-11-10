@@ -26,6 +26,11 @@ const ObservingLog = preload("res://telescope/ObservingLog.gd")
 @export var full_well_e: float = 100000.0
 @export var npix: int = 256
 @export var fov_deg: float = 1.0
+## Monitor mode: re-expose the target every this many GAME minutes
+## while it's dark and the target is up, logging each good measurement.
+@export var monitor_interval_min: float = 10.0
+@export var monitor_min_alt_deg: float = 8.0
+@export var monitor_max_sun_alt_deg: float = -6.0
 
 var engine = null
 var catalog = null
@@ -52,6 +57,12 @@ var _comp: Dictionary = {}           # comparison star (same frame)
 var _comp_btn: Button
 var _log_btn: Button
 var _fits_btn: Button
+var _monitor_box: CheckBox
+var monitoring: bool = false
+var monitor_status: String = ""
+var monitor_points: int = 0
+var _monitor_target: Dictionary = {}
+var _monitor_next_jd: float = 0.0
 
 func _ready() -> void:
 	position = Vector2(16, 16)
@@ -107,6 +118,11 @@ func _ready() -> void:
 	v.add_child(row3)
 	_expose_btn = _button("Expose", row3, expose)
 	_button("Close", row3, func(): closed.emit())
+	_monitor_box = CheckBox.new()
+	_monitor_box.text = "Monitor"
+	_monitor_box.tooltip_text = "Keep observing this target every %d game-minutes while it's dark, logging each measurement. Keeps going when you walk away." % int(monitor_interval_min)
+	_monitor_box.toggled.connect(set_monitoring)
+	row3.add_child(_monitor_box)
 	var row4 := HBoxContainer.new()
 	v.add_child(row4)
 	_comp_btn = _button("Use as comparison", row4, _set_comparison)
@@ -120,6 +136,7 @@ func _ready() -> void:
 
 	_view = Control.new()
 	_view.custom_minimum_size = Vector2(512, 512)
+	_view.size_flags_vertical = Control.SIZE_SHRINK_BEGIN   # stay square: clicks map 1:1
 	h.add_child(_view)
 	_tex_rect = TextureRect.new()
 	_tex_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
@@ -232,7 +249,7 @@ func current_target() -> Dictionary:
 func is_busy() -> bool:
 	return _task >= 0
 
-func expose() -> void:
+func expose(from_monitor: bool = false) -> void:
 	if _task >= 0 or catalog == null or not catalog.is_loaded:
 		return
 	var tgt: Dictionary = current_target()
@@ -251,6 +268,7 @@ func expose() -> void:
 		"defocus_px": defocus_px, "read_noise": read_noise_e, "full_well": full_well_e,
 		"seed": hash([snap["jd"], tgt["ra"], tgt["dec"]]),
 		"target": tgt,
+		"monitor": from_monitor,
 	}
 	_expose_btn.disabled = true
 	_status.text = "exposing %s…" % _fmt_exp(exptime())
@@ -266,6 +284,7 @@ func _on_frame(f: Dictionary) -> void:
 	_task = -1
 	_expose_btn.disabled = false
 	f["target"] = _pending_req["target"]
+	f["monitor"] = _pending_req["monitor"]
 	frame = f
 	_tex_rect.texture = ImageTexture.create_from_image(f["display"])
 	_status.text = "%s  %s  %s  X=%.2f" % [f["target"]["name"], f["band"], _fmt_exp(f["exptime"]), f["airmass"]]
@@ -281,6 +300,62 @@ func frame_ready(f: Dictionary) -> void:
 		var c: float = (f["npix"] - 1) * 0.5
 		measure_at(Vector2(c, c))
 	_refresh_buttons()
+	if monitoring and f.get("monitor", false):
+		_monitor_record()
+
+# ---------------------------------------------------------------------
+# Monitor mode — automated time series for light curves
+# ---------------------------------------------------------------------
+func set_monitoring(on: bool) -> void:
+	if on:
+		var tgt: Dictionary = current_target()
+		if tgt["star"] < 0:
+			_status.text = "Monitor needs a named target"
+			_monitor_box.set_pressed_no_signal(false)
+			return
+		_monitor_target = tgt
+		_monitor_next_jd = 0.0
+		monitor_points = 0
+	monitoring = on
+	_monitor_box.set_pressed_no_signal(on)
+	monitor_status = ("monitoring %s" % _monitor_target["name"]) if on else ""
+
+func _process(_delta: float) -> void:
+	if not monitoring or _task >= 0 or engine == null:
+		return
+	var jd: float = engine.current_jd
+	if jd < _monitor_next_jd:
+		return
+	_monitor_next_jd = jd + monitor_interval_min / 1440.0
+	var snap: Dictionary = SkyModel.snapshot(engine)
+	var dir: Vector3 = SkyModel.radec_to_dir(_monitor_target["ra"], _monitor_target["dec"], snap["lst"], snap["lat"])
+	var alt: float = rad_to_deg(asin(clampf(dir.y, -1.0, 1.0)))
+	if snap["sun_alt_deg"] > monitor_max_sun_alt_deg:
+		monitor_status = "%s: waiting for dark · %d pts" % [_monitor_target["name"], monitor_points]
+		return
+	if alt < monitor_min_alt_deg:
+		monitor_status = "%s: waiting to rise · %d pts" % [_monitor_target["name"], monitor_points]
+		return
+	if not select_target_by_name(_monitor_target["name"]):
+		refresh()
+		select_target_by_name(_monitor_target["name"])
+	expose(true)
+
+func _monitor_record() -> void:
+	if _meas.is_empty() or _meas.get("star", -1) != _monitor_target["star"]:
+		return
+	if _meas["saturated"]:
+		# Friendly auto-exposure: halve and try again next time.
+		set_exptime(exptime() * 0.5)
+		monitor_status = "%s: saturated, shortening to %s" % [_monitor_target["name"], _fmt_exp(exptime())]
+		return
+	if _meas["snr"] < 20.0 and exptime() < 60.0:
+		set_exptime(exptime() * 2.0)
+	if _meas["snr"] < 5.0:
+		return
+	log_measurement(_meas)
+	monitor_points += 1
+	monitor_status = "monitoring %s · %d pts · last %s %.3f" % [_monitor_target["name"], monitor_points, frame["band"], _meas["mag"]]
 
 # ---------------------------------------------------------------------
 # Photometry
@@ -342,6 +417,9 @@ func _set_comparison() -> void:
 func _log_measurement() -> void:
 	if _meas.is_empty():
 		return
+	if _meas["saturated"]:
+		_status.text = "saturated — not logged; try a shorter exposure"
+		return
 	log_measurement(_meas)
 	_status.text = "logged %s %s = %.3f" % [_meas["name"], frame["band"], _meas["mag"]]
 
@@ -384,10 +462,10 @@ func save_fits() -> String:
 
 ## Writes <target>_<band>_<jd>.fits and a .truth.json sidecar into
 ## user://observations; returns the FITS path ("" on failure).
-static func write_frame_fits(frame: Dictionary, catalog) -> String:
-	ObservingLog.ensure_dir()
+static func write_frame_fits(frame: Dictionary, catalog, dir: String = ObservingLog.DIR) -> String:
+	DirAccess.make_dir_recursive_absolute(dir)
 	var stem: String = "%s_%s_%.5f" % [String(frame["target"]["name"]).validate_filename().replace(" ", "_"), frame["band"], frame["jd"]]
-	var path: String = ObservingLog.DIR + "/" + stem + ".fits"
+	var path: String = dir + "/" + stem + ".fits"
 	var c: float = (frame["npix"] - 1) * 0.5
 	var cards: Array = [
 		["DATE-OBS", _jd_to_isot(frame["jd"]), "UT, mid-exposure"],
@@ -419,7 +497,7 @@ static func write_frame_fits(frame: Dictionary, catalog) -> String:
 	var truth: Array = []
 	for s in frame["truth"]:
 		truth.append({"x": s["x"], "y": s["y"], "mag": s["mag"], "e": s["e"], "name": s["name"]})
-	var tf := FileAccess.open(ObservingLog.DIR + "/" + stem + ".truth.json", FileAccess.WRITE)
+	var tf := FileAccess.open(dir + "/" + stem + ".truth.json", FileAccess.WRITE)
 	tf.store_string(JSON.stringify({"note": "x,y 0-based, row 0 = FITS row 1", "sky_e": frame["sky_e"], "stars": truth}))
 	tf.close()
 	return path
