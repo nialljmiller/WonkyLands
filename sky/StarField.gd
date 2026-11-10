@@ -97,7 +97,8 @@ func _build() -> void:
 	buf.resize(n * 20)
 	for i in n:
 		var u: Vector3 = _catalog.unit_eq[i] * star_distance
-		var c: Color = _catalog.star_color(i)
+		# Catalog rgb is gamma-encoded sRGB; the 3D pipeline wants linear.
+		var c: Color = _catalog.star_color(i).srgb_to_linear()
 		var o: int = i * 20
 		buf[o + 0] = 1.0; buf[o + 3] = u.x
 		buf[o + 5] = 1.0; buf[o + 7] = u.y

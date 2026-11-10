@@ -35,6 +35,13 @@ var vmag: PackedFloat32Array = PackedFloat32Array()
 var unit_eq: PackedVector3Array = PackedVector3Array()   # equatorial unit vectors
 var named_indices: PackedInt32Array = PackedInt32Array()
 var variable_star_index: PackedInt32Array = PackedInt32Array()  # variable i -> star index
+# Field-star support: the catalog's faint limit (field stars start
+# there), how deep the telescope's synthetic field goes (a cost knob,
+# not physics), and for every catalog star the nearest field template,
+# so field colours follow the catalog's own Teff/logg mix.
+var faintest_v: float = 6.5
+var field_v_max: float = 16.0
+var template_for_star: PackedInt32Array = PackedInt32Array()
 
 var _task_id: int = -1
 
@@ -112,12 +119,35 @@ func _parse(p: String) -> void:
 		unit_eq[i] = Vector3(cos(dec) * cos(ra), cos(dec) * sin(ra), sin(dec))
 		if String(s.get("name", "")) != "":
 			named_indices.append(i)
+	faintest_v = vmag[n - 1] if n > 0 else 6.5
+	for i in n:
+		if vmag[i] < 50.0:
+			faintest_v = maxf(faintest_v, vmag[i])
+	_match_templates()
 	variable_star_index.resize(variables.size())
 	variable_star_index.fill(-1)
 	for i in n:
 		var v = stars[i].get("var")
 		if v != null and int(v) >= 0 and int(v) < variables.size():
 			variable_star_index[int(v)] = i
+
+func _match_templates() -> void:
+	template_for_star.resize(stars.size())
+	template_for_star.fill(0)
+	if field_templates.is_empty():
+		return
+	for i in stars.size():
+		var lt: float = log(maxf(float(stars[i].get("teff", 5800.0)), 1000.0))
+		var lg: float = float(stars[i].get("logg", 4.0))
+		var best: int = 0
+		var best_d: float = INF
+		for k in field_templates.size():
+			var tp: Dictionary = field_templates[k]
+			var d: float = pow((lt - log(float(tp["teff"]))) / 0.05, 2.0) + pow(lg - float(tp["logg"]), 2.0)
+			if d < best_d:
+				best_d = d
+				best = k
+		template_for_star[i] = best
 
 # ---------------------------------------------------------------------
 # Queries

@@ -329,6 +329,12 @@ func initialize_astronomical_system():
 		stars.engine = astronomical_system
 		add_child(stars)
 
+	# Observatory — telescope, photometry, observing log, time warp.
+	var obs = load("res://telescope/Observatory.gd").new()
+	obs.name = "Observatory"
+	obs.engine = astronomical_system
+	add_child(obs)
+
 func initialize_water_system():
 	# Create water system node
 	water_system = load("res://WaterSystem.gd").new()
