@@ -1,12 +1,18 @@
 extends PanelContainer
 ## TelescopePanel — the telescope's control screen.
 ##
-## Pick a target (named stars above the horizon, variables marked, or
-## "where I'm looking"), a filter from the catalog's bands and an
-## exposure time, then Expose. The frame is synthesised on a worker
-## thread (CCDSimulator) and shown with an asinh stretch.
+## The frame is the hero; two slim columns walk through the steps:
+##   ① Point  — searchable list of stars up now, variables tagged
+##   ② Expose — filter, exposure (presets, slider, Auto), Expose
+##   ③ Measure — click a star: card with mag ± err, comparison, log,
+##               FITS, Monitor tonight (with sparkline) and colours.
+## Keys: Space expose · 1–7 filter · N time warp · Esc close.
+## Frames are synthesised on a worker thread (CCDSimulator); the stretch
+## runs in a shader (FrameView), so nothing heavy runs per frame.
 
 signal closed
+signal open_light_curve(target: String, band: String)
+signal warp
 
 const SkyModel = preload("res://telescope/SkyModel.gd")
 const CCDSimulator = preload("res://telescope/CCDSimulator.gd")
@@ -14,6 +20,12 @@ const FrameDisplay = preload("res://telescope/FrameDisplay.gd")
 const Photometry = preload("res://telescope/Photometry.gd")
 const FitsWriter = preload("res://telescope/FitsWriter.gd")
 const ObservingLog = preload("res://telescope/ObservingLog.gd")
+const UiStyle = preload("res://telescope/UiStyle.gd")
+const FrameView = preload("res://telescope/FrameView.gd")
+const TargetPicker = preload("res://telescope/TargetPicker.gd")
+
+const PRESETS: Array = [0.001, 0.01, 0.1, 1.0, 10.0, 60.0]
+const COLOURS: Array = [["B", "V"], ["V", "R"], ["V", "I"], ["g", "r"], ["r", "i"]]
 
 # The instrument. Not catalog physics — the kit the player owns.
 @export var aperture_m: float = 0.08          # 80 mm refractor
@@ -31,6 +43,8 @@ const ObservingLog = preload("res://telescope/ObservingLog.gd")
 @export var monitor_interval_min: float = 10.0
 @export var monitor_min_alt_deg: float = 8.0
 @export var monitor_max_sun_alt_deg: float = -6.0
+## Auto exposure aims the target's peak pixel at this fraction of full well.
+@export var auto_peak_frac: float = 0.5
 
 var engine = null
 var catalog = null
@@ -38,214 +52,338 @@ var telescope: Node3D = null        # prop to slew
 var look_dir_provider: Callable      # returns the camera's forward dir
 
 var frame: Dictionary = {}           # last synthesised frame
-var _targets: Array = []             # [{label, star(-1 = look), ra, dec}]
 var _task: int = -1
 var _pending_req: Dictionary = {}
-
-var _target_opt: OptionButton
-var _band_opt: OptionButton
-var _exp_slider: HSlider
-var _exp_label: Label
-var _expose_btn: Button
-var _status: Label
-var _view: Control
-var _tex_rect: TextureRect
-var _info: RichTextLabel
-var _overlay: Control
 var _meas: Dictionary = {}           # last clicked / auto measurement
 var _comp: Dictionary = {}           # comparison star (same frame)
-var _comp_btn: Button
-var _log_btn: Button
-var _fits_btn: Button
-var _monitor_box: CheckBox
+var _logged: Dictionary = {}         # "jd|star" already in the log
+var _series: Dictionary = {}         # "target|band" -> [[jd, mag, err]]
+var _series_loaded: bool = false
+var _band: int = 0
+var _colour_seq: Array = []          # bands still to take
+var _colour_res: Dictionary = {}     # band -> measurement
 var monitoring: bool = false
 var monitor_status: String = ""
 var monitor_points: int = 0
 var _monitor_target: Dictionary = {}
 var _monitor_next_jd: float = 0.0
+var _monitor_wait: String = ""
+var _clock: float = 0.0
+
+# Widgets
+var _picker: TargetPicker
+var _teaser: Label
+var _band_btns: Array = []
+var _exp_slider: HSlider
+var _exp_label: Label
+var _auto: Button
+var _exp_hint: Label
+var _expose_btn: Button
+var _view: FrameView
+var _readout: Label
+var _stretch_btns: Array = []
+var _gain: HSlider
+var _labels_btn: Button
+var _meas_hint: Label
+var _card: RichTextLabel
+var _comp_chip: Button
+var _comp_btn: Button
+var _log_btn: Button
+var _autolog: Button
+var _fits_btn: Button
+var _monitor_btn: Button
+var _monitor_lbl: Label
+var _spark: Control
+var _colour_opt: OptionButton
+var _colour_lbl: Label
+var _clock_lbl: Label
 
 func _ready() -> void:
-	position = Vector2(16, 16)
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.05, 0.06, 0.1, 0.88)
-	sb.set_corner_radius_all(10)
-	sb.set_content_margin_all(12)
-	add_theme_stylebox_override("panel", sb)
+	UiStyle.panel(self)
+	add_child(UiStyle.label("Loading the star catalog…", 15, UiStyle.MUTED))
 
-	var h := HBoxContainer.new()
-	h.add_theme_constant_override("separation", 12)
-	add_child(h)
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 6)
-	v.custom_minimum_size = Vector2(330, 0)
-	h.add_child(v)
-	var title := Label.new()
-	title.text = "TELESCOPE  ·  %d mm refractor  ·  %.0f′ field" % [int(aperture_m * 1000.0), fov_deg * 60.0]
-	title.add_theme_color_override("font_color", Color(0.75, 0.85, 1.0))
-	v.add_child(title)
+## Built on first open: the catalog (and so the filter list) loads async.
+func _build() -> void:
+	get_child(0).queue_free()
+	var root := UiStyle.col(self, 8)
+	# Header
+	var head := UiStyle.row(root, 10)
+	head.add_child(UiStyle.label("TELESCOPE", 17, UiStyle.ACCENT))
+	head.add_child(UiStyle.label("%d mm refractor · %.0f′ field" % [int(aperture_m * 1000.0), fov_deg * 60.0], 13, UiStyle.MUTED))
+	var sp := Control.new()
+	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(sp)
+	_clock_lbl = UiStyle.label("", 13, UiStyle.MUTED)
+	head.add_child(_clock_lbl)
+	UiStyle.chip("✕", head, func(): closed.emit()).tooltip_text = "Close (Esc)"
 
-	var row1 := HBoxContainer.new()
-	v.add_child(row1)
-	row1.add_child(_label("Target"))
-	_target_opt = OptionButton.new()
-	_target_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_target_opt.fit_to_longest_item = false
-	row1.add_child(_target_opt)
-	_target_opt.clip_text = true
-	_target_opt.custom_minimum_size = Vector2(250, 0)
-	var row1b := HBoxContainer.new()
-	v.add_child(row1b)
-	row1b.add_child(_label("Filter"))
-	_band_opt = OptionButton.new()
-	row1b.add_child(_band_opt)
+	var body := UiStyle.row(root, 12)
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var left := _column(body, 290)
+	var center := UiStyle.col(body, 6)
+	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var right := _column(body, 260)
 
-	var row2 := HBoxContainer.new()
-	v.add_child(row2)
-	row2.add_child(_label("Exposure"))
+	# ① Point
+	left.add_child(UiStyle.step("①", "POINT"))
+	_picker = TargetPicker.new()
+	_picker.catalog = catalog
+	_picker.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_picker.picked.connect(_on_target_changed)
+	left.add_child(_picker)
+	_teaser = UiStyle.hint()
+	left.add_child(_teaser)
+
+	# ② Expose
+	left.add_child(UiStyle.step("②", "EXPOSE"))
+	var bands := UiStyle.row(left, 3)
+	var group := ButtonGroup.new()
+	for b in catalog.band_names:
+		var c: Button = UiStyle.chip(b, bands, Callable(), true)
+		c.toggled.connect(func(on): if on: _on_band_chip(_band_btns.find(c)))
+		c.button_group = group
+		c.custom_minimum_size = Vector2(32, 0)
+		c.tooltip_text = "%s  (%.0f nm) · key %d" % [catalog.bands[b].get("filter", b), catalog.bands[b].get("lambda_eff_nm", 0.0), _band_btns.size() + 1]
+		_band_btns.append(c)
+	var pres := HFlowContainer.new()
+	pres.add_theme_constant_override("h_separation", 4)
+	pres.add_theme_constant_override("v_separation", 4)
+	left.add_child(pres)
+	for t in PRESETS:
+		UiStyle.chip(fmt_exp(t).replace(" ", ""), pres, func(): _auto.set_pressed_no_signal(false); set_exptime(t), false, 12)
+	var er := UiStyle.row(left, 6)
 	_exp_slider = HSlider.new()
 	_exp_slider.min_value = -3.0      # log10 seconds: 1 ms ..
 	_exp_slider.max_value = 2.5       # .. ~5 min
 	_exp_slider.step = 0.05
 	_exp_slider.value = 1.0
+	_exp_slider.focus_mode = Control.FOCUS_NONE
 	_exp_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_exp_slider.value_changed.connect(func(_x): _exp_label.text = _fmt_exp(exptime()))
-	row2.add_child(_exp_slider)
-	_exp_label = _label(_fmt_exp(exptime()))
-	_exp_label.custom_minimum_size = Vector2(70, 0)
-	row2.add_child(_exp_label)
+	_exp_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_exp_slider.drag_started.connect(func(): _auto.set_pressed_no_signal(false))
+	_exp_slider.value_changed.connect(func(_x): _update_hints())
+	er.add_child(_exp_slider)
+	_exp_label = UiStyle.label("", 14)
+	_exp_label.custom_minimum_size = Vector2(62, 0)
+	_exp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	er.add_child(_exp_label)
+	_auto = UiStyle.chip("Auto", er, _apply_auto, true)
+	_auto.tooltip_text = "Pick an exposure that puts the target's brightest pixel at ~%d%% of full well" % int(auto_peak_frac * 100.0)
+	_auto.set_pressed_no_signal(true)
+	_exp_hint = UiStyle.hint()
+	left.add_child(_exp_hint)
+	_expose_btn = UiStyle.primary("Expose", left, expose)
+	var cr := UiStyle.row(left, 4)
+	cr.add_child(UiStyle.label("Colour", 13, UiStyle.MUTED))
+	_colour_opt = OptionButton.new()
+	_colour_opt.focus_mode = Control.FOCUS_NONE
+	for pair in COLOURS:
+		if catalog.band_names.has(pair[0]) and catalog.band_names.has(pair[1]):
+			_colour_opt.add_item("%s − %s" % pair)
+			_colour_opt.set_item_metadata(_colour_opt.item_count - 1, pair)
+	cr.add_child(_colour_opt)
+	UiStyle.chip("Take both", cr, take_colour).tooltip_text = "Expose in both filters (Auto exposure) and compare the colour index with the catalog's SED_Tools synthetic photometry"
+	_colour_lbl = UiStyle.hint()
+	_colour_lbl.visible = false
+	left.add_child(_colour_lbl)
 
-	var row3 := HBoxContainer.new()
-	v.add_child(row3)
-	_expose_btn = _button("Expose", row3, expose)
-	_button("Close", row3, func(): closed.emit())
-	_monitor_box = CheckBox.new()
-	_monitor_box.text = "Monitor"
-	_monitor_box.tooltip_text = "Keep observing this target every %d game-minutes while it's dark, logging each measurement. Keeps going when you walk away." % int(monitor_interval_min)
-	_monitor_box.toggled.connect(set_monitoring)
-	row3.add_child(_monitor_box)
-	var row4 := HBoxContainer.new()
-	v.add_child(row4)
-	_comp_btn = _button("Use as comparison", row4, _set_comparison)
-	_log_btn = _button("Log it", row4, _log_measurement)
-	_fits_btn = _button("Save FITS", row4, save_fits)
-	_status = _label("")
-	_status.add_theme_font_size_override("font_size", 13)
-	_status.add_theme_color_override("font_color", Color(0.7, 0.8, 0.9))
-	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	v.add_child(_status)
 
-	_view = Control.new()
-	_view.custom_minimum_size = Vector2(512, 512)
-	_view.size_flags_vertical = Control.SIZE_SHRINK_BEGIN   # stay square: clicks map 1:1
-	h.add_child(_view)
-	_tex_rect = TextureRect.new()
-	_tex_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	_tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	_tex_rect.stretch_mode = TextureRect.STRETCH_SCALE
-	_tex_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_tex_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_view.add_child(_tex_rect)
-	_overlay = Control.new()
-	_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_overlay.draw.connect(_draw_overlay)
-	_view.add_child(_overlay)
-	_view.mouse_default_cursor_shape = Control.CURSOR_CROSS
-	_view.gui_input.connect(_on_view_input)
+	# Frame (centre)
+	var tools := UiStyle.row(center, 4)
+	tools.add_child(UiStyle.label("Stretch", 12, UiStyle.MUTED))
+	var sg := ButtonGroup.new()
+	for s in ["asinh", "linear", "log"]:
+		var b: Button = UiStyle.chip(s, tools, _apply_stretch, true, 12)
+		b.button_group = sg
+		_stretch_btns.append(b)
+	_stretch_btns[0].set_pressed_no_signal(true)
+	tools.add_child(UiStyle.label("  ☀", 13, UiStyle.MUTED))
+	_gain = HSlider.new()
+	_gain.min_value = -1.0
+	_gain.max_value = 2.0
+	_gain.step = 0.02
+	_gain.focus_mode = Control.FOCUS_NONE
+	_gain.custom_minimum_size = Vector2(90, 0)
+	_gain.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_gain.value_changed.connect(func(_x): _apply_stretch())
+	_gain.tooltip_text = "Brightness"
+	tools.add_child(_gain)
+	var sp2 := Control.new()
+	sp2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tools.add_child(sp2)
+	_labels_btn = UiStyle.chip("Labels", tools, func(): _view.show_labels = _labels_btn.button_pressed; _view.redraw(), true, 12)
+	_labels_btn.set_pressed_no_signal(true)
+	_labels_btn.tooltip_text = "Name catalog stars (zoom in for faint field-star magnitudes)"
+	UiStyle.chip("Fit", tools, func(): _view.reset_view(), false, 12).tooltip_text = "Reset zoom (double-click the frame)"
+	_view = FrameView.new()
+	_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_view.custom_minimum_size = Vector2(300, 300)
+	_view.clicked.connect(_on_frame_click)
+	_view.hovered.connect(func(t): _readout.text = t if t != "" else _summary())
+	center.add_child(_view)
+	_readout = UiStyle.label("", 12, UiStyle.MUTED)
+	_readout.clip_text = true
+	_readout.custom_minimum_size = Vector2(10, 0)
+	center.add_child(_readout)
 
-	_info = RichTextLabel.new()
-	_info.bbcode_enabled = true
-	_info.fit_content = true
-	_info.custom_minimum_size = Vector2(330, 0)
-	_info.add_theme_font_size_override("normal_font_size", 13)
-	v.add_child(_info)
-	_info.text = "[color=#8899aa]Pick a target and press Expose. Daylight frames will be… bright.[/color]"
+	# ③ Measure
+	right.add_child(UiStyle.step("③", "MEASURE"))
+	_meas_hint = UiStyle.hint()
+	right.add_child(_meas_hint)
+	var card := UiStyle.card(10)
+	right.add_child(card)
+	_card = RichTextLabel.new()
+	_card.bbcode_enabled = true
+	_card.fit_content = true
+	_card.scroll_active = false
+	_card.add_theme_font_size_override("normal_font_size", 13)
+	_card.add_theme_font_size_override("bold_font_size", 15)
+	card.add_child(_card)
+	_comp_chip = UiStyle.chip("", right, clear_comparison, false, 12)
+	_comp_chip.tooltip_text = "Comparison star — click to clear"
+	_comp_chip.add_theme_color_override("font_color", Color(0.55, 0.85, 1.0))
+	var mr := UiStyle.row(right, 4)
+	_comp_btn = UiStyle.chip("Set as comparison", mr, _set_comparison)
+	_log_btn = UiStyle.chip("Log", mr, _log_measurement)
+	var mr2 := UiStyle.row(right, 4)
+	_autolog = UiStyle.chip("Auto-log ✓", mr2, func(): _autolog.text = "Auto-log ✓" if _autolog.button_pressed else "Auto-log", true)
+	_autolog.set_pressed_no_signal(true)
+	_autolog.tooltip_text = "Good measurements of the target go straight into the observing log"
+	_fits_btn = UiStyle.chip("Save FITS", mr2, save_fits)
 
-func _label(t: String) -> Label:
-	var l := Label.new()
-	l.text = t
-	return l
+	right.add_child(_spacer(6))
+	right.add_child(UiStyle.label("TIME SERIES", 13, UiStyle.ACCENT))
+	_monitor_btn = UiStyle.chip("◉  Monitor tonight", right, func(): set_monitoring(_monitor_btn.button_pressed), true)
+	_monitor_btn.tooltip_text = "Re-observe this target every %d game-minutes while it's dark and up, logging each measurement. Keeps going when you walk away; press N to warp time." % int(monitor_interval_min)
+	_monitor_lbl = UiStyle.hint()
+	right.add_child(_monitor_lbl)
+	_spark = Control.new()
+	_spark.custom_minimum_size = Vector2(0, 52)
+	_spark.draw.connect(_draw_spark)
+	right.add_child(_spark)
+	UiStyle.chip("Open light curve  ›", right, func(): open_light_curve.emit(_series_target(), _band_name()))
 
-func _button(t: String, parent: Control, cb: Callable) -> Button:
-	var b := Button.new()
-	b.text = t
-	b.pressed.connect(cb)
-	parent.add_child(b)
-	return b
+	root.add_child(UiStyle.label("Space expose  ·  1–%d filter  ·  scroll zoom · drag pan · double-click fit  ·  N warp time  ·  Esc close" % _band_btns.size(), 11, Color(0.45, 0.5, 0.6)))
+	var vi: int = catalog.band_names.find("V")
+	_band = maxi(vi, 0)
+	_band_btns[_band].button_pressed = true
+	_apply_stretch()
+	_show_measurement()
+
+func _column(parent: Control, w: float) -> VBoxContainer:
+	var sc := ScrollContainer.new()
+	sc.custom_minimum_size = Vector2(w, 0)
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	parent.add_child(sc)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 6)
+	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	v.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sc.add_child(v)
+	return v
+
+func _spacer(h: float) -> Control:
+	var c := Control.new()
+	c.custom_minimum_size = Vector2(0, h)
+	return c
 
 func exptime() -> float:
 	return pow(10.0, _exp_slider.value)
 
-static func _fmt_exp(t: float) -> String:
-	return "%.0f ms" % (t * 1000.0) if t < 1.0 else "%.1f s" % t
+static func fmt_exp(t: float) -> String:
+	if t < 0.0995:
+		return "%.0f ms" % (t * 1000.0)
+	return ("%.1f s" % t).replace(".0 s", " s") if t < 9.95 else "%.0f s" % t
+
+func _band_name() -> String:
+	return catalog.band_names[_band]
 
 # ---------------------------------------------------------------------
-# Opening: refresh targets and filters
+# Opening: refresh targets
 # ---------------------------------------------------------------------
 func refresh() -> void:
 	if catalog == null or not catalog.is_loaded:
-		_status.text = "star catalog not loaded"
 		return
-	if _band_opt.item_count == 0:
-		for b in catalog.band_names:
-			_band_opt.add_item(b)
-		var vi: int = catalog.band_names.find("V")
-		_band_opt.select(maxi(vi, 0))
-	var prev: String = _target_opt.get_item_text(_target_opt.selected) if _target_opt.selected >= 0 else ""
-	_targets.clear()
-	_target_opt.clear()
-	_targets.append({"label": "Where I'm looking", "star": -1})
-	var snap: Dictionary = SkyModel.snapshot(engine)
-	var basis: Basis = SkyModel.equatorial_basis(snap["lst"], snap["lat"])
-	var vars: Array = []
-	var named: Array = []
-	for i in catalog.named_indices:
-		var alt: float = rad_to_deg(asin(clampf((basis * catalog.unit_eq[i]).y, -1.0, 1.0)))
-		if alt < 5.0:
-			continue
-		var is_var: bool = catalog.variable_of_star(i) >= 0
-		var lbl: String = "%s%s  (V %.1f, alt %.0f°)" % ["VARIABLE · " if is_var else "", catalog.star_name(i), catalog.vmag[i], alt]
-		(vars if is_var else named).append({"label": lbl, "star": i})
-	for t in vars + named:
-		_targets.append(t)
-	var sel: int = 0
-	for k in _targets.size():
-		_target_opt.add_item(_targets[k]["label"])
-		if _targets[k]["label"].get_slice("  (", 0) == prev.get_slice("  (", 0):
-			sel = k
-	_target_opt.select(sel)
-	_status.text = "%d targets up" % (_targets.size() - 1)
+	if _view == null:
+		_build()
+	_picker.refresh(engine)
+	if not _series_loaded:
+		_series_loaded = true
+		for r in ObservingLog.read_all():
+			_series_append(r["target"], r["band"], r["jd"], r["mag"], r["err"])
+	_on_target_changed()
 
 func select_target_by_name(target_name: String) -> bool:
-	for k in _targets.size():
-		var s: int = _targets[k]["star"]
-		if s >= 0 and catalog.star_name(s).to_lower() == target_name.to_lower():
-			_target_opt.select(k)
-			return true
-	return false
+	var i: int = catalog.find_star(target_name)
+	if i < 0 or _picker.altitude_of(i).is_empty():
+		return false
+	_picker.select_star(i)
+	_on_target_changed()
+	return true
 
 func set_band(b: String) -> void:
 	var k: int = catalog.band_names.find(b)
 	if k >= 0:
-		_band_opt.select(k)
+		_band_btns[k].button_pressed = true
+
+func _on_band_chip(k: int) -> void:
+	_band = k
+	_on_target_changed()
 
 func set_exptime(t: float) -> void:
-	_exp_slider.value = log(t) / log(10.0)
+	_exp_slider.value = log(clampf(t, 0.001, 316.0)) / log(10.0)
 
-# ---------------------------------------------------------------------
-# Exposure
-# ---------------------------------------------------------------------
+func _on_target_changed() -> void:
+	if _auto.button_pressed:
+		_apply_auto()
+	_update_hints()
+	_spark.queue_redraw()
+
 func current_target() -> Dictionary:
-	var k: int = maxi(_target_opt.selected, 0)
-	var t: Dictionary = _targets[k] if k < _targets.size() else {"label": "Where I'm looking", "star": -1}
+	var i: int = _picker.selected_star
+	if i >= 0:
+		return {"name": catalog.star_name(i), "star": i, "ra": catalog.ra_rad[i], "dec": catalog.dec_rad[i]}
 	var snap: Dictionary = SkyModel.snapshot(engine)
-	if t["star"] >= 0:
-		return {"name": catalog.star_name(t["star"]), "star": t["star"],
-			"ra": catalog.ra_rad[t["star"]], "dec": catalog.dec_rad[t["star"]]}
 	var dir: Vector3 = look_dir_provider.call() if look_dir_provider.is_valid() else Vector3(0, 1, 0)
 	var rd: Vector2 = SkyModel.dir_to_radec(dir, snap["lst"], snap["lat"])
 	return {"name": "RA %.2fh Dec %+.1f°" % [rad_to_deg(rd.x) / 15.0, rad_to_deg(rd.y)], "star": -1, "ra": rd.x, "dec": rd.y}
 
+# ---------------------------------------------------------------------
+# Auto exposure: the same zero point, extinction, PSF and sky the
+# CCDSimulator uses, so peak = star·(central pixel fraction) + sky.
+# ---------------------------------------------------------------------
+## Peak-pixel and sky electrons per second for a target (x = star, y = sky).
+func peak_rates(tgt: Dictionary, band_name: String) -> Vector2:
+	var band: Dictionary = catalog.bands[band_name]
+	var snap: Dictionary = SkyModel.snapshot(engine)
+	var dir: Vector3 = SkyModel.radec_to_dir(tgt["ra"], tgt["dec"], snap["lst"], snap["lat"])
+	var X: float = SkyModel.airmass(asin(clampf(dir.y, -1.0, 1.0)))
+	var scale_as: float = fov_deg * 3600.0 / npix
+	var area: float = PI * pow(aperture_m * 0.5, 2.0)
+	var seeing_px: float = seeing_arcsec * pow(X, 0.6) / scale_as
+	var sigma: float = sqrt(seeing_px * seeing_px + defocus_px * defocus_px) / 2.3548
+	var sky_mag: float = SkyModel.sky_mag_arcsec2(float(band["sky_dark_mag_arcsec2"]), snap)
+	var sky1: float = CCDSimulator.star_electrons(sky_mag, band, 0.0, area, 1.0, qe) * scale_as * scale_as
+	if tgt["star"] < 0:
+		return Vector2(0.0, sky1)
+	var frac: float = CCDSimulator._erf(0.5 / (sigma * sqrt(2.0)))
+	var m: float = catalog.star_mag_at(tgt["star"], band_name, snap["jd"])
+	return Vector2(CCDSimulator.star_electrons(m, band, X, area, 1.0, qe) * frac * frac, sky1)
+
+func auto_exptime(tgt: Dictionary, band_name: String) -> float:
+	var r: Vector2 = peak_rates(tgt, band_name)
+	if tgt["star"] < 0:      # blank sky: sky at 5 % of full well, ≤ 30 s
+		return clampf(0.05 * full_well_e / maxf(r.y, 1e-9), 0.001, 30.0)
+	return clampf(auto_peak_frac * full_well_e / maxf(r.x + r.y, 1e-9), 0.001, 300.0)
+
+func _apply_auto() -> void:
+	if _auto.button_pressed and catalog != null and engine != null:
+		set_exptime(auto_exptime(current_target(), _band_name()))
+	_update_hints()
+
+# ---------------------------------------------------------------------
+# Exposure
+# ---------------------------------------------------------------------
 func is_busy() -> bool:
 	return _task >= 0
 
@@ -258,11 +396,13 @@ func expose(from_monitor: bool = false) -> void:
 	if telescope != null:
 		telescope.point_at(dir)
 	if dir.y < 0.0:
-		_status.text = "%s is below the horizon" % tgt["name"]
+		_exp_hint.text = "%s is below the horizon." % tgt["name"]
 		return
+	if _auto.button_pressed:
+		set_exptime(auto_exptime(tgt, _band_name()))
 	_pending_req = {
 		"catalog": catalog, "ra": tgt["ra"], "dec": tgt["dec"],
-		"band": catalog.band_names[maxi(_band_opt.selected, 0)],
+		"band": _band_name(),
 		"exptime": exptime(), "snap": snap, "npix": npix, "fov_deg": fov_deg,
 		"aperture_m": aperture_m, "qe": qe, "seeing_arcsec": seeing_arcsec,
 		"defocus_px": defocus_px, "read_noise": read_noise_e, "full_well": full_well_e,
@@ -271,25 +411,28 @@ func expose(from_monitor: bool = false) -> void:
 		"monitor": from_monitor,
 	}
 	_expose_btn.disabled = true
-	_status.text = "exposing %s…" % _fmt_exp(exptime())
+	_expose_btn.text = "Exposing…"
+	_view.busy_text = "Exposing %s in %s…" % [fmt_exp(exptime()), _band_name()]
+	_view.redraw()
 	_task = WorkerThreadPool.add_task(_worker.bind(_pending_req), false, "CCD exposure")
 
 func _worker(req: Dictionary) -> void:
 	var f: Dictionary = CCDSimulator.synthesize(req)
-	f["display"] = FrameDisplay.to_image(f["image"], f["npix"], f["full_well"])
+	f["float_image"] = FrameDisplay.float_image(f["image"], f["npix"])
+	f["levels"] = FrameDisplay.levels(f["image"], f["full_well"])
 	call_deferred("_on_frame", f)
 
 func _on_frame(f: Dictionary) -> void:
 	WorkerThreadPool.wait_for_task_completion(_task)
 	_task = -1
 	_expose_btn.disabled = false
+	_expose_btn.text = "Expose"
 	f["target"] = _pending_req["target"]
 	f["monitor"] = _pending_req["monitor"]
+	var same: bool = not frame.is_empty() and frame["target"]["name"] == f["target"]["name"]
 	frame = f
-	_tex_rect.texture = ImageTexture.create_from_image(f["display"])
-	_status.text = "%s  %s  %s  X=%.2f" % [f["target"]["name"], f["band"], _fmt_exp(f["exptime"]), f["airmass"]]
-	_info.text = _frame_summary(f)
-	_overlay.queue_redraw()
+	_view.busy_text = ""
+	_view.set_frame(f, same)
 	frame_ready(f)
 
 ## After every exposure: measure the target at the chip centre.
@@ -299,9 +442,13 @@ func frame_ready(f: Dictionary) -> void:
 	if f["target"]["star"] >= 0 and f["saturated_frac"] < 0.5:
 		var c: float = (f["npix"] - 1) * 0.5
 		measure_at(Vector2(c, c))
-	_refresh_buttons()
+		if _autolog.button_pressed and not f.get("monitor", false) and _status(_meas) == "good" and _meas.get("star", -1) == f["target"]["star"]:
+			log_measurement(_meas)
+	_show_measurement()
 	if monitoring and f.get("monitor", false):
 		_monitor_record()
+	if not _colour_seq.is_empty():
+		_colour_step()
 
 # ---------------------------------------------------------------------
 # Monitor mode — automated time series for light curves
@@ -310,17 +457,28 @@ func set_monitoring(on: bool) -> void:
 	if on:
 		var tgt: Dictionary = current_target()
 		if tgt["star"] < 0:
-			_status.text = "Monitor needs a named target"
-			_monitor_box.set_pressed_no_signal(false)
+			_monitor_lbl.text = "Pick a named star to monitor."
+			_monitor_btn.set_pressed_no_signal(false)
 			return
 		_monitor_target = tgt
 		_monitor_next_jd = 0.0
 		monitor_points = 0
 	monitoring = on
-	_monitor_box.set_pressed_no_signal(on)
+	_monitor_btn.set_pressed_no_signal(on)
+	_monitor_btn.text = ("◉  Monitoring %s" % _monitor_target["name"]) if on else "◉  Monitor tonight"
 	monitor_status = ("monitoring %s" % _monitor_target["name"]) if on else ""
+	_update_monitor_label()
+	_spark.queue_redraw()
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	if _view == null:
+		return
+	_clock += delta
+	if visible and _clock >= 0.25:
+		_clock = 0.0
+		if engine:
+			_clock_lbl.text = "%s UT  ×%d" % [load("res://telescope/Observatory.gd").jd_to_string(engine.current_jd), int(engine.time_scale)]
+		_update_monitor_label()
 	if not monitoring or _task >= 0 or engine == null:
 		return
 	var jd: float = engine.current_jd
@@ -330,15 +488,16 @@ func _process(_delta: float) -> void:
 	var snap: Dictionary = SkyModel.snapshot(engine)
 	var dir: Vector3 = SkyModel.radec_to_dir(_monitor_target["ra"], _monitor_target["dec"], snap["lst"], snap["lat"])
 	var alt: float = rad_to_deg(asin(clampf(dir.y, -1.0, 1.0)))
+	_monitor_wait = "Waiting for dark" if snap["sun_alt_deg"] > monitor_max_sun_alt_deg else ("Waiting for it to rise" if alt < monitor_min_alt_deg else "")
 	if snap["sun_alt_deg"] > monitor_max_sun_alt_deg:
 		monitor_status = "%s: waiting for dark · %d pts" % [_monitor_target["name"], monitor_points]
 		return
 	if alt < monitor_min_alt_deg:
 		monitor_status = "%s: waiting to rise · %d pts" % [_monitor_target["name"], monitor_points]
 		return
-	if not select_target_by_name(_monitor_target["name"]):
-		refresh()
-		select_target_by_name(_monitor_target["name"])
+	if _picker.selected_star != _monitor_target["star"]:
+		_picker.refresh(engine)
+		_picker.select_star(_monitor_target["star"])
 	expose(true)
 
 func _monitor_record() -> void:
@@ -347,9 +506,9 @@ func _monitor_record() -> void:
 	if _meas["saturated"]:
 		# Friendly auto-exposure: halve and try again next time.
 		set_exptime(exptime() * 0.5)
-		monitor_status = "%s: saturated, shortening to %s" % [_monitor_target["name"], _fmt_exp(exptime())]
+		monitor_status = "%s: saturated, shortening to %s" % [_monitor_target["name"], fmt_exp(exptime())]
 		return
-	if _meas["snr"] < 20.0 and exptime() < 60.0:
+	if _meas["snr"] < 20.0 and exptime() < 60.0 and not _auto.button_pressed:
 		set_exptime(exptime() * 2.0)
 	if _meas["snr"] < 5.0:
 		return
@@ -357,98 +516,277 @@ func _monitor_record() -> void:
 	monitor_points += 1
 	monitor_status = "monitoring %s · %d pts · last %s %.3f" % [_monitor_target["name"], monitor_points, frame["band"], _meas["mag"]]
 
+func _update_monitor_label() -> void:
+	if not monitoring:
+		_monitor_lbl.text = "Builds a light curve while you explore."
+		return
+	var tonight: int = 0
+	for p in _series.get(_monitor_target["name"] + "|" + _band_name(), []):
+		if p[0] > engine.current_jd - 0.6 and p[0] <= engine.current_jd:
+			tonight += 1
+	var state: String = _monitor_wait if _monitor_wait != "" else "Next exposure in %.0f min" % (maxf(_monitor_next_jd - engine.current_jd, 0.0) * 1440.0)
+	_monitor_lbl.text = "%s · %d points tonight" % [state, tonight]
+
 # ---------------------------------------------------------------------
 # Photometry
 # ---------------------------------------------------------------------
-func _scale() -> float:
-	return _view.size.x / float(frame.get("npix", 256))
-
 func _to_screen(p: Vector2) -> Vector2:
-	var n: int = frame["npix"]
-	var k: float = _scale()
-	return Vector2((p.x + 0.5) * k, (n - 0.5 - p.y) * k)
+	return _view.to_screen(p)
 
-func _to_pixel(s: Vector2) -> Vector2:
-	var n: int = frame["npix"]
-	var k: float = _scale()
-	return Vector2(s.x / k - 0.5, n - 0.5 - s.y / k)
-
-func _on_view_input(e: InputEvent) -> void:
+func _on_frame_click(p: Vector2) -> void:
 	if frame.is_empty() or _task >= 0:
 		return
-	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
-		measure_at(_to_pixel(e.position))
+	measure_at(p)
+	_show_measurement()
 
 func measure_at(p: Vector2) -> Dictionary:
-	var band: Dictionary = catalog.bands[frame["band"]]
-	var m: Dictionary = Photometry.measure_frame(frame, band, p)
+	var m: Dictionary = Photometry.measure_frame(frame, catalog.bands[frame["band"]], p)
 	if not m.get("ok", false):
-		_info.text = _frame_summary(frame) + "\n[color=#ff8866]Nothing measurable there.[/color]"
+		_meas_hint.text = "Nothing measurable there: click right on a star."
 		return m
 	if m["name"] == "" and m["star"] < 0:
 		m["name"] = "field star"
 	_meas = m
-	_info.text = _frame_summary(frame) + "\n" + _meas_text(m)
-	_overlay.queue_redraw()
-	_refresh_buttons()
 	return m
 
-func _meas_text(m: Dictionary) -> String:
-	var who: String = m["name"] if m["name"] != "" else "star"
-	var s: String = "[b]%s[/b]  at (%.1f, %.1f)\n" % [who, m["x"] + 1.0, m["y"] + 1.0]
-	s += "counts %.0f ± %.0f e⁻  ·  sky %.0f e⁻/px  ·  S/N %.0f\n" % [m["flux"], m["err"], m["sky"], m["snr"]]
-	s += "instrumental %.3f  ·  [b]%s = %.3f ± %.3f[/b]" % [m["inst_mag"], frame["band"], m["mag"], m["mag_err"]]
-	if m.has("true_mag"):
-		s += "  [color=#8899aa](catalog %.3f)[/color]" % m["true_mag"]
+## good / low S/N / saturated
+static func _status(m: Dictionary) -> String:
+	if m.is_empty():
+		return ""
 	if m["saturated"]:
-		s += "\n[color=#ffaa55]Saturated! Shorter exposure.[/color]"
-	if not _comp.is_empty() and _comp != m:
+		return "saturated"
+	return "good" if m["snr"] >= 20.0 else "low S/N"
+
+func _show_measurement() -> void:
+	_view.meas = _meas
+	_view.comp = _comp
+	var sat_frame: bool = not frame.is_empty() and frame["saturated_frac"] > 0.5
+	_view.banner = ""
+	if sat_frame:
+		_view.banner = "Daylight: the sky floods the chip. Press N to warp to night."
+	elif _status(_meas) == "saturated":
+		_view.banner = "%s is saturated: use Auto or a shorter exposure" % _meas["name"]
+	_view.banner_color = UiStyle.BAD
+	_view.redraw()
+	_card.text = _card_text(_meas)
+	_comp_chip.visible = not _comp.is_empty()
+	if not _comp.is_empty():
+		_comp_chip.text = "Comparison: %s  (%s %.3f)   ✕" % [_comp["name"], frame["band"], _comp["mag"]]
+	_comp_btn.disabled = _meas.is_empty() or _meas == _comp
+	_log_btn.disabled = _meas.is_empty() or _meas["saturated"] or _logged.has(_log_key(_meas))
+	_fits_btn.disabled = frame.is_empty()
+	_readout.text = _summary()
+	_update_hints()
+
+func _card_text(m: Dictionary) -> String:
+	if m.is_empty():
+		return "[color=#8c9ab0]No measurement yet.[/color]"
+	var b: String = frame["band"]
+	var st: String = _status(m)
+	var col: String = {"good": "#66e68c", "low S/N": "#ffb84d", "saturated": "#ff6b61"}[st]
+	var s: String = "[b]%s[/b]" % m["name"]
+	var vi: int = catalog.variable_of_star(m["star"]) if m["star"] >= 0 else -1
+	if vi >= 0:
+		s += "  [color=#ff8cd9]VAR[/color]"
+	s += "   [color=%s]● %s[/color]\n" % [col, st]
+	if st == "saturated":
+		s += "[font_size=20][color=#ff6b61]%s ≈ ?[/color][/font_size]\n[color=#8c9ab0]Peak pixel hit full well; the counts are clipped, so the magnitude can't be trusted.[/color]" % b
+	else:
+		s += "[font_size=22]%s = %.3f[/font_size] [color=#8c9ab0]± %.3f[/color]\n" % [b, m["mag"], m["mag_err"]]
+		if m.has("true_mag"):
+			s += "catalog %.3f   [color=#8c9ab0]Δ %+.3f[/color]\n" % [m["true_mag"], m["mag"] - m["true_mag"]]
+		s += "[color=#8c9ab0]S/N %.0f · %s e⁻ · airmass %.2f[/color]" % [m["snr"], FrameView._thousands(m["flux"]), frame["airmass"]]
+	if not _comp.is_empty() and _comp != m and not m["saturated"]:
 		var d: Vector2 = Photometry.differential(m, _comp)
-		s += "\nΔ%s vs %s = [b]%+.3f ± %.3f[/b]" % [frame["band"], _comp["name"], d.x, d.y]
+		s += "\n[color=#8cd9ff]Δ%s vs comparison = [b]%+.3f ± %.3f[/b][/color]" % [b, d.x, d.y]
+	if _logged.has(_log_key(m)):
+		s += "\n[color=#66e68c]✓ in the observing log[/color]"
 	return s
+
+func _summary() -> String:
+	if frame.is_empty():
+		return "Hover the frame for pixel values, coordinates and star names."
+	return "%s · %s · %s · airmass %.2f · sky %.1f mag/″² · seeing %.0f″ · %d stars on chip" % [
+		frame["target"]["name"], frame["band"], fmt_exp(frame["exptime"]), frame["airmass"],
+		frame["sky_mag"], frame["fwhm_px"] * frame["scale_arcsec"], frame["truth"].size()]
 
 func _set_comparison() -> void:
 	if _meas.is_empty():
 		return
 	_comp = _meas
-	_info.text = _frame_summary(frame) + "\nComparison set: [b]%s[/b] (%.3f). Now click another star." % [_comp["name"], _comp["mag"]]
-	_overlay.queue_redraw()
+	_show_measurement()
+
+func clear_comparison() -> void:
+	_comp = {}
+	_show_measurement()
+
+func _log_key(m: Dictionary) -> String:
+	var who: String = str(m["star"]) if m.get("star", -1) >= 0 else "%.0f,%.0f" % [m.get("x", 0.0), m.get("y", 0.0)]
+	return "%.6f|%s" % [frame.get("jd", 0.0), who]
 
 func _log_measurement() -> void:
-	if _meas.is_empty():
-		return
-	if _meas["saturated"]:
-		_status.text = "saturated — not logged; try a shorter exposure"
+	if _meas.is_empty() or _meas["saturated"]:
 		return
 	log_measurement(_meas)
-	_status.text = "logged %s %s = %.3f" % [_meas["name"], frame["band"], _meas["mag"]]
+	_show_measurement()
 
 func log_measurement(m: Dictionary) -> void:
-	ObservingLog.append(frame["jd"], m["name"], frame["band"], m["mag"], m["mag_err"], frame["airmass"], frame["exptime"])
-
-func _refresh_buttons() -> void:
-	_comp_btn.disabled = _meas.is_empty()
-	_log_btn.disabled = _meas.is_empty() or _meas.get("saturated", false)
-	_fits_btn.disabled = frame.is_empty()
-
-func _draw_overlay() -> void:
-	if frame.is_empty():
+	var key: String = _log_key(m)
+	if _logged.has(key):
 		return
-	var k: float = _scale()
-	for item in [[_comp, Color(0.4, 0.8, 1.0)], [_meas, Color(0.4, 1.0, 0.5)]]:
-		var m: Dictionary = item[0]
-		if m.is_empty():
-			continue
-		var c: Vector2 = _to_screen(Vector2(m["x"], m["y"]))
-		_overlay.draw_arc(c, m["r_ap"] * k, 0, TAU, 48, item[1], 1.5)
-		_overlay.draw_arc(c, m["r_in"] * k, 0, TAU, 48, item[1] * Color(1, 1, 1, 0.5), 1.0)
-		_overlay.draw_arc(c, m["r_out"] * k, 0, TAU, 48, item[1] * Color(1, 1, 1, 0.5), 1.0)
-	# Compass: N up, E left.
-	var o := Vector2(_view.size.x - 28, _view.size.y - 28)
-	_overlay.draw_line(o, o + Vector2(0, -18), Color(1, 1, 0.6, 0.7), 1.5)
-	_overlay.draw_line(o, o + Vector2(-18, 0), Color(1, 1, 0.6, 0.7), 1.5)
-	_overlay.draw_string(get_theme_default_font(), o + Vector2(-4, -21), "N", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 0.6, 0.8))
-	_overlay.draw_string(get_theme_default_font(), o + Vector2(-30, 4), "E", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 0.6, 0.8))
+	_logged[key] = true
+	ObservingLog.append(frame["jd"], m["name"], frame["band"], m["mag"], m["mag_err"], frame["airmass"], frame["exptime"])
+	_series_append(m["name"], frame["band"], frame["jd"], m["mag"], m["mag_err"])
+	_spark.queue_redraw()
+
+func _series_append(target: String, band: String, jd: float, mag: float, err: float) -> void:
+	var k: String = target + "|" + band
+	if not _series.has(k):
+		_series[k] = []
+	_series[k].append([jd, mag, err])
+
+func _series_target() -> String:
+	return _monitor_target["name"] if monitoring else current_target()["name"]
+
+func _draw_spark() -> void:
+	var r := Rect2(Vector2.ZERO, _spark.size)
+	_spark.draw_style_box(UiStyle.box(UiStyle.CARD, 6, 0), r)
+	var font: Font = get_theme_default_font()
+	# The latest night's points, in time order.
+	var all: Array = _series.get(_series_target() + "|" + _band_name(), [])
+	var latest: float = -INF
+	for p in all:
+		latest = maxf(latest, p[0])
+	var pts: Array = all.filter(func(p): return p[0] > latest - 0.6)
+	pts.sort_custom(func(a, b): return a[0] < b[0])
+	if pts.size() < 2:
+		_spark.draw_string(font, Vector2(0, r.size.y * 0.5 + 5), "%s %s: %d point%s so far" % [_series_target(), _band_name(), pts.size(), "" if pts.size() == 1 else "s"], HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 12, UiStyle.MUTED)
+		return
+	var t0: float = pts[0][0]
+	var t1: float = maxf(pts[-1][0], t0 + 1e-4)
+	var m0: float = INF
+	var m1: float = -INF
+	for p in pts:
+		m0 = minf(m0, p[1]); m1 = maxf(m1, p[1])
+	m1 = maxf(m1, m0 + 0.02)
+	var inner: Rect2 = r.grow_individual(-8, -8, -60, -8)
+	var prev := Vector2.INF
+	for p in pts:
+		var q := Vector2(inner.position.x + (p[0] - t0) / (t1 - t0) * inner.size.x, inner.position.y + (p[1] - m0) / (m1 - m0) * inner.size.y)
+		if prev != Vector2.INF:
+			_spark.draw_line(prev, q, UiStyle.ACCENT * Color(1, 1, 1, 0.4), 1.0)
+		_spark.draw_circle(q, 1.8, UiStyle.ACCENT)
+		prev = q
+	_spark.draw_string(font, Vector2(inner.end.x + 6, inner.position.y + 8), "%.2f" % m0, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UiStyle.MUTED)
+	_spark.draw_string(font, Vector2(inner.end.x + 6, inner.end.y + 2), "%.2f" % m1, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UiStyle.MUTED)
+	_spark.draw_string(font, Vector2(inner.end.x + 6, inner.get_center().y + 5), "latest night" if latest < engine.current_jd - 0.6 else "tonight", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, UiStyle.TEXT)
+
+# ---------------------------------------------------------------------
+# Colour: two filters back to back, colour index vs catalog
+# ---------------------------------------------------------------------
+func take_colour() -> void:
+	var tgt: Dictionary = current_target()
+	if tgt["star"] < 0 or _task >= 0 or _colour_opt.selected < 0:
+		_colour_lbl.text = "Pick a named star first."
+		_colour_lbl.visible = true
+		return
+	_colour_seq = _colour_opt.get_item_metadata(_colour_opt.selected).duplicate()
+	_colour_res = {}
+	_colour_lbl.visible = true
+	_colour_lbl.text = "Taking %s, then %s…" % _colour_seq
+	_auto.button_pressed = true
+	set_band(_colour_seq[0])
+	expose()
+
+func _colour_step() -> void:
+	var b: String = _colour_seq.pop_front()
+	if _status(_meas) == "saturated" or _meas.is_empty() or _meas["star"] != frame["target"]["star"]:
+		_colour_lbl.text = "Couldn't measure the target in %s." % b
+		_colour_seq = []
+		return
+	_colour_res[b] = _meas
+	if not _colour_seq.is_empty():
+		set_band(_colour_seq[0])
+		expose.call_deferred()
+		return
+	var bs: Array = _colour_res.keys()
+	var a: Dictionary = _colour_res[bs[0]]
+	var c: Dictionary = _colour_res[bs[1]]
+	var jd: float = frame["jd"]
+	var i: int = frame["target"]["star"]
+	var cat_ci: float = catalog.star_mag_at(i, bs[0], jd) - catalog.star_mag_at(i, bs[1], jd)
+	_colour_lbl.text = "%s − %s = %.3f ± %.3f   (catalog %.3f)" % [bs[0], bs[1], a["mag"] - c["mag"], sqrt(a["mag_err"] ** 2 + c["mag_err"] ** 2), cat_ci]
+	_colour_lbl.add_theme_color_override("font_color", UiStyle.TEXT)
+
+# ---------------------------------------------------------------------
+# Hints, stretch, keys
+# ---------------------------------------------------------------------
+func _update_hints() -> void:
+	if catalog == null or _exp_label == null:
+		return
+	_exp_label.text = fmt_exp(exptime())
+	var tgt: Dictionary = current_target()
+	var i: int = tgt["star"]
+	if i < 0:
+		_teaser.text = "Blank-sky frame wherever you're looking. Pick a star to measure one."
+	else:
+		var vi: int = catalog.variable_of_star(i)
+		var t: Dictionary = _picker.altitude_of(i)
+		if vi >= 0:
+			var v: Dictionary = catalog.variables[vi]
+			var tbl: Array = v["dmag"].get("V", [0.0])
+			var amp: float = tbl.max() - tbl.min()
+			var p: float = v["period_days"]
+			var next_d: float = fposmod(float(v["epoch_jd"]) - engine.current_jd, p)
+			var when: String = "%.0f h" % (next_d * 24.0) if next_d < 2.0 else "%.1f d" % next_d
+			var verb: String = "watch it dim" if String(v["type"]).begins_with("E") else "watch it pulse"
+			_teaser.text = "%s, P ≈ %.2f d: %s by %.1f mag. Next %s in %s." % [TargetPicker.type_name(v["type"]).get_slice(" (", 0), p, verb, amp, String(v.get("epoch_is", "minimum")), when]
+			_teaser.add_theme_color_override("font_color", UiStyle.VAR)
+		else:
+			_teaser.text = "%s · V %.2f · %.0f K · %s, alt %.0f°" % [tgt["name"], catalog.vmag[i], float(catalog.stars[i].get("teff", 0)), "rising" if t.get("rising", false) else "setting", t.get("alt", 0.0)]
+			_teaser.add_theme_color_override("font_color", UiStyle.MUTED)
+	var r: Vector2 = peak_rates(tgt, _band_name()) if engine else Vector2.ZERO
+	var fill: float = (r.x + r.y) * exptime() / full_well_e
+	if _auto.button_pressed:
+		_exp_hint.text = "Auto: %s peaks near %d%% of full well." % [tgt["name"] if i >= 0 else "the sky", int(minf(fill, 9.99) * 100.0)] if i >= 0 else "Auto: blank-sky exposure."
+		_exp_hint.add_theme_color_override("font_color", UiStyle.MUTED)
+	elif fill >= 1.0:
+		_exp_hint.text = "⚠ %s will saturate at %s. Try Auto." % [tgt["name"] if i >= 0 else "The sky", fmt_exp(exptime())]
+		_exp_hint.add_theme_color_override("font_color", UiStyle.WARN)
+	else:
+		_exp_hint.text = "Peak ≈ %d%% of full well." % int(fill * 100.0) if i >= 0 else ""
+		_exp_hint.add_theme_color_override("font_color", UiStyle.MUTED)
+	if frame.is_empty():
+		_meas_hint.text = "Take an exposure first: Expose or Space."
+	elif frame["saturated_frac"] > 0.5:
+		_meas_hint.text = "Too bright to measure. Wait for night."
+	elif _comp.is_empty():
+		_meas_hint.text = "Click any star to measure it. Set one as comparison for differential photometry."
+	else:
+		_meas_hint.text = "Click another star: Δmag is relative to the comparison."
+	_card.text = _card_text(_meas) if _card else ""
+
+func _apply_stretch() -> void:
+	var mode: int = 0
+	for k in _stretch_btns.size():
+		if _stretch_btns[k].button_pressed:
+			mode = k
+	_view.set_stretch(mode, pow(10.0, _gain.value))
+
+func _input(e: InputEvent) -> void:
+	if _view == null or not visible or not (e is InputEventKey) or not e.pressed or e.echo:
+		return
+	if get_viewport().gui_get_focus_owner() is LineEdit:
+		return
+	if e.keycode == KEY_SPACE:
+		expose()
+	elif e.keycode >= KEY_1 and e.keycode < KEY_1 + _band_btns.size():
+		_band_btns[e.keycode - KEY_1].button_pressed = true
+	elif e.keycode == KEY_N:
+		warp.emit()
+	else:
+		return
+	get_viewport().set_input_as_handled()
 
 # ---------------------------------------------------------------------
 # FITS export (+ a truth sidecar so the synthesis can be checked)
@@ -457,7 +795,10 @@ func save_fits() -> String:
 	if frame.is_empty():
 		return ""
 	var path: String = write_frame_fits(frame, catalog)
-	_status.text = ("saved %s" % ProjectSettings.globalize_path(path)) if path != "" else "FITS write failed"
+	if path == "":
+		UiStyle.toast(_view, "FITS write failed")
+	else:
+		UiStyle.toast(_view, "Saved %s" % path.get_file(), "Open folder", func(): OS.shell_open(ProjectSettings.globalize_path(ObservingLog.DIR)))
 	return path
 
 ## Writes <target>_<band>_<jd>.fits and a .truth.json sidecar into
@@ -506,13 +847,6 @@ static func _jd_to_isot(jd: float) -> String:
 	var s: String = load("res://telescope/Observatory.gd").jd_to_string(jd)
 	var secs: float = fposmod((jd + 0.5) * 86400.0, 60.0)
 	return s.replace(" ", "T") + ":%06.3f" % secs
-
-func _frame_summary(f: Dictionary) -> String:
-	var s: String = "sky %.1f mag/″²  ·  FWHM %.1f px (%.0f″)  ·  %d stars on chip" % [
-		f["sky_mag"], f["fwhm_px"], f["fwhm_px"] * f["scale_arcsec"], f["truth"].size()]
-	if f["saturated_frac"] > 0.5:
-		s += "\n[color=#ffaa55]Blown out — the sky is brighter than the chip can take. Wait for night![/color]"
-	return s
 
 func _exit_tree() -> void:
 	if _task >= 0:

@@ -7,7 +7,11 @@ extends Node
 ##   --look=ALT,AZ   point the player camera at alt/az (deg)
 ##   --nostars       disable the star field (A/B perf runs)
 ##   --expose=NAME   place a telescope, expose NAME, show the panel
-##   --log           open the observing-log panel
+##   --exp=S --band=B --monitor --warp=X   exposure, filter, monitor, time warp
+##   --varsonly --search=TEXT --noexpose    target-picker states
+##   --click [--zoom=Z --nocomp --fits --colour]   measure / comparison /
+##                   hover / FITS toast / colour-index sequence
+##   --log [--target=NAME --band=B --find --fold]  light-curve panel
 
 var _args: Dictionary = {}
 var _t: float = 0.0

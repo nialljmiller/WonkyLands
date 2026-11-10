@@ -16,6 +16,7 @@ const SkyModel = preload("res://telescope/SkyModel.gd")
 const TelescopeScript = preload("res://telescope/Telescope.gd")
 const TelescopePanelScript = preload("res://telescope/TelescopePanel.gd")
 const LogPanelScript = preload("res://telescope/LogPanel.gd")
+const UiStyle = preload("res://telescope/UiStyle.gd")
 
 const WARP_STEPS: Array = [60.0, 600.0, 3600.0]
 const USE_RANGE_M: float = 3.0
@@ -46,12 +47,12 @@ func _ready() -> void:
 	_hud.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0, 0.85))
 	_hud.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.6))
 	_layer.add_child(_hud)
-	_hint = Label.new()
-	_hint.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	_hint.position = Vector2(-150, -60)
-	_hint.size = Vector2(300, 24)
+	_hint = UiStyle.label("", 15)
+	_hint.add_theme_stylebox_override("normal", UiStyle.box(Color(0.05, 0.06, 0.1, 0.75), 14, 8))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_hint.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+	_hint.visible = false
+	_hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 70)
+	_hint.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_layer.add_child(_hint)
 
 	panel = TelescopePanelScript.new()
@@ -60,6 +61,8 @@ func _ready() -> void:
 	panel.look_dir_provider = _look_dir
 	panel.visible = false
 	panel.closed.connect(close_panels)
+	panel.warp.connect(cycle_warp)
+	panel.open_light_curve.connect(func(t, b): open_panel(log_panel); log_panel.focus(t, b))
 	_layer.add_child(panel)
 	log_panel = LogPanelScript.new()
 	log_panel.visible = false
@@ -166,15 +169,12 @@ func close_panels() -> void:
 func _update_hud(p: Node3D) -> void:
 	if engine == null:
 		return
+	_hud.visible = _open_panel == null
 	_hud.text = "%s UT   ×%d" % [jd_to_string(engine.current_jd), int(engine.time_scale)]
 	if panel.monitoring:
 		_hud.text += "\n" + panel.monitor_status
-	if _open_panel != null:
-		_hint.text = ""
-	elif _near_telescope(p) and _player_free(p):
-		_hint.text = "F  use telescope"
-	else:
-		_hint.text = ""
+	_hint.visible = _open_panel == null and _near_telescope(p) and _player_free(p)
+	_hint.text = "F  ·  Use telescope"
 
 ## "YYYY-MM-DD HH:MM" from a Julian Date (Meeus, Gregorian).
 static func jd_to_string(jd: float) -> String:
@@ -207,17 +207,40 @@ func debug_drive(args: Dictionary) -> void:
 		if args.has("band"):
 			panel.set_band(String(args["band"]))
 		if args.has("exp"):
+			panel._auto.button_pressed = false
 			panel.set_exptime(float(args["exp"]))
-		panel.expose()
+		if args.has("varsonly"):
+			panel._picker._vars_only.button_pressed = true
+		if args.has("search"):
+			panel._picker._search.text = String(args["search"])
+			panel._picker._fill()
+		if not args.has("noexpose"):
+			panel.expose()
 		if args.has("monitor"):
 			panel.set_monitoring(true)
-			close_panels()
+			if not args.has("stay"):
+				close_panels()
 	if args.has("warp"):
 		engine.time_scale = float(args["warp"])
 	if args.has("log"):
 		open_panel(log_panel)
-		if log_panel._target_opt.item_count > 0:
+		if args.has("target"):
+			log_panel.focus(String(args["target"]), String(args.get("band", "V")))
+		if args.has("find"):
 			log_panel.find_period()
+		if args.has("fold"):
+			log_panel.set_fold(true)
+		if args.has("pick"):     # click a candidate-period chip
+			while log_panel._search.is_empty():
+				await get_tree().process_frame
+			log_panel.set_period(log_panel._search["candidates"][int(args["pick"])][0])
+		if args.has("hover"):
+			await get_tree().create_timer(float(args["hover"])).timeout
+			var pts: Array = log_panel._screen_pts
+			if not pts.is_empty():
+				var mv := InputEventMouseMotion.new()
+				mv.position = pts[pts.size() / 3][0] + Vector2(1, 1)
+				log_panel._plot_input(mv)
 
 ## Exercise the click → comparison → differential → log → FITS path.
 func _debug_click(args: Dictionary) -> void:
@@ -234,14 +257,60 @@ func _debug_click(args: Dictionary) -> void:
 		if off > 20.0 and s["x"] > 20 and s["y"] > 20 and s["x"] < f["npix"] - 20 and s["y"] < f["npix"] - 20 \
 				and (comp.is_empty() or s["e"] > comp["e"]):
 			comp = s
-	for target in [Vector2(comp["x"], comp["y"]), Vector2(c, c)]:
-		var ev := InputEventMouseButton.new()
-		ev.pressed = true
-		ev.button_index = MOUSE_BUTTON_LEFT
-		ev.position = panel._to_screen(target + Vector2(0.7, -0.6))
-		panel._on_view_input(ev)
-		if panel._comp.is_empty():
-			panel._set_comparison()
-	panel._log_measurement()
-	print("DEBUG_CLICK ", panel._info.get_parsed_text().replace("\n", " | "))
-	print("DEBUG_FITS ", ProjectSettings.globalize_path(panel.save_fits()))
+	if args.has("zoom"):
+		var z: float = float(args["zoom"])
+		panel._view.zoom = z
+		panel._view._c = Vector2(c + 0.5, f["npix"] - 0.5 - c)
+		panel._view._clamp_view()
+		panel._view.redraw()
+	if not args.has("nocomp"):
+		for target in [Vector2(comp["x"], comp["y"]), Vector2(c, c)]:
+			for pressed in [true, false]:
+				var ev := InputEventMouseButton.new()
+				ev.pressed = pressed
+				ev.button_index = MOUSE_BUTTON_LEFT
+				ev.position = panel._to_screen(target + Vector2(0.7, -0.6))
+				panel._view._gui_input(ev)
+			if panel._comp.is_empty():
+				panel._set_comparison()
+		panel._log_measurement()
+	var mv := InputEventMouseMotion.new()
+	mv.position = panel._to_screen(Vector2(comp["x"], comp["y"]) + Vector2(0.3, 0.2))
+	panel._view._gui_input(mv)
+	if args.has("fits"):
+		print("DEBUG_FITS ", ProjectSettings.globalize_path(panel.save_fits()))
+	if args.has("colour"):
+		panel.take_colour()
+	await get_tree().create_timer(1.0).timeout
+	print("DEBUG_CLICK ", panel._card.get_parsed_text().replace("\n", " | "), " || ", panel._readout.text, " || ", panel._colour_lbl.text)
+	if args.has("paths"):
+		await _debug_paths()
+
+## Input paths the flags above skip: wheel zoom, Open light curve,
+## plot zoom/pan and a periodogram click.
+func _debug_paths() -> void:
+	var wheel := InputEventMouseButton.new()
+	wheel.pressed = true
+	wheel.button_index = MOUSE_BUTTON_WHEEL_UP
+	wheel.position = panel._view.size * 0.5
+	panel._view._gui_input(wheel)
+	print("DEBUG_PATHS view zoom ", panel._view.zoom)
+	panel.open_light_curve.emit("Algol", "V")
+	await get_tree().create_timer(0.3).timeout
+	wheel.position = log_panel._plot_rect.get_center()
+	log_panel._plot_input(wheel)
+	var drag := InputEventMouseMotion.new()
+	drag.button_mask = MOUSE_BUTTON_MASK_LEFT
+	drag.relative = Vector2(40, 0)
+	drag.position = wheel.position
+	log_panel._plot_input(drag)
+	print("DEBUG_PATHS log target ", log_panel._target(), " bands ", log_panel._bands_on.keys(), " xr ", log_panel._xr)
+	log_panel.find_period()
+	while log_panel._search.is_empty():
+		await get_tree().process_frame
+	var click := InputEventMouseButton.new()
+	click.pressed = true
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.position = Vector2(log_panel._p_to_x(log_panel._search["candidates"][0][0] * 2.0, log_panel._pg_rect()), 40)
+	log_panel._pgram_input(click)
+	print("DEBUG_PATHS pgram click -> P ", log_panel._period.value)

@@ -1,10 +1,36 @@
 extends RefCounted
-## FrameDisplay — turns a float CCD frame into a viewable Image.
+## FrameDisplay — how a float CCD frame is shown.
 ##
-## zscale-ish limits (median and MAD-based sigma from a pixel sample)
-## followed by an asinh stretch, so faint field stars and a bright
-## target both show. Row 0 of the frame is the bottom (FITS), so the
-## image is flipped to put north up on screen.
+## The raw electrons go to the GPU as a 32-bit float texture (flipped
+## so north is up: row 0 of the frame is the bottom, FITS-style). A small
+## shader does the stretch, so changing asinh / linear / log or the
+## brightness costs nothing. Levels are zscale-ish: median and MAD sigma
+## from a pixel sample. Saturated pixels are tinted red.
+
+const SHADER := """
+shader_type canvas_item;
+uniform float black = 0.0;
+uniform float white = 1.0;
+uniform float soft = 1.0;
+uniform float full_well = 100000.0;
+uniform int mode = 0;          // 0 asinh, 1 linear, 2 log
+uniform float gain = 1.0;      // brightness: >1 brighter
+uniform bool blown = false;
+float ash(float x) { return log(x + sqrt(x * x + 1.0)); }
+void fragment() {
+	float e = texture(TEXTURE, UV).r;
+	float x = max(e - black, 0.0);
+	float w = max(white - black, 1.0) / gain;
+	float v;
+	if (mode == 0) v = ash(x / soft) / ash(w / soft);
+	else if (mode == 1) v = x / w;
+	else v = log(1.0 + 1000.0 * x / w) / log(1001.0);
+	v = blown ? 1.0 : clamp(v, 0.0, 1.0);
+	vec3 c = vec3(v);
+	if (!blown && e >= full_well * 0.999) c = vec3(1.0, 0.25, 0.2);
+	COLOR = vec4(c, 1.0);
+}
+"""
 
 static func stats(img: PackedFloat32Array) -> Vector2:
 	var sample := PackedFloat32Array()
@@ -20,28 +46,15 @@ static func stats(img: PackedFloat32Array) -> Vector2:
 	dev.sort()
 	return Vector2(med, 1.4826 * dev[dev.size() / 2])
 
-static func to_image(img: PackedFloat32Array, n: int, full_well: float) -> Image:
+## Stretch limits for the shader.
+static func levels(img: PackedFloat32Array, full_well: float) -> Dictionary:
 	var st: Vector2 = stats(img)
-	var med: float = st.x
 	var sig: float = maxf(st.y, 1.0)
-	var black: float = med - 2.0 * sig
-	var white: float = minf(med + 400.0 * sig, full_well)
-	var soft: float = 4.0 * sig
-	var norm: float = 1.0 / _asinh(maxf(white - black, 1.0) / soft)
-	var bytes := PackedByteArray()
-	bytes.resize(n * n)
-	var blown: bool = med >= full_well * 0.95
-	for y in n:
-		var src: int = (n - 1 - y) * n
-		var dst: int = y * n
-		for x in n:
-			var v: float
-			if blown:
-				v = 1.0
-			else:
-				v = clampf(_asinh(maxf(img[src + x] - black, 0.0) / soft) * norm, 0.0, 1.0)
-			bytes[dst + x] = int(v * 255.0)
-	return Image.create_from_data(n, n, false, Image.FORMAT_L8, bytes)
+	return {"black": st.x - 2.0 * sig, "white": minf(st.x + 400.0 * sig, full_well),
+		"soft": 4.0 * sig, "blown": st.x >= full_well * 0.95}
 
-static func _asinh(x: float) -> float:
-	return log(x + sqrt(x * x + 1.0))
+## North-up float image (safe on a worker thread).
+static func float_image(img: PackedFloat32Array, n: int) -> Image:
+	var im := Image.create_from_data(n, n, false, Image.FORMAT_RF, img.to_byte_array())
+	im.flip_y()
+	return im
