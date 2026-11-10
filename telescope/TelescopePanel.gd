@@ -11,6 +11,9 @@ signal closed
 const SkyModel = preload("res://telescope/SkyModel.gd")
 const CCDSimulator = preload("res://telescope/CCDSimulator.gd")
 const FrameDisplay = preload("res://telescope/FrameDisplay.gd")
+const Photometry = preload("res://telescope/Photometry.gd")
+const FitsWriter = preload("res://telescope/FitsWriter.gd")
+const ObservingLog = preload("res://telescope/ObservingLog.gd")
 
 # The instrument. Not catalog physics — the kit the player owns.
 @export var aperture_m: float = 0.08          # 80 mm refractor
@@ -43,6 +46,12 @@ var _status: Label
 var _view: Control
 var _tex_rect: TextureRect
 var _info: RichTextLabel
+var _overlay: Control
+var _meas: Dictionary = {}           # last clicked / auto measurement
+var _comp: Dictionary = {}           # comparison star (same frame)
+var _comp_btn: Button
+var _log_btn: Button
+var _fits_btn: Button
 
 func _ready() -> void:
 	position = Vector2(16, 16)
@@ -98,6 +107,11 @@ func _ready() -> void:
 	v.add_child(row3)
 	_expose_btn = _button("Expose", row3, expose)
 	_button("Close", row3, func(): closed.emit())
+	var row4 := HBoxContainer.new()
+	v.add_child(row4)
+	_comp_btn = _button("Use as comparison", row4, _set_comparison)
+	_log_btn = _button("Log it", row4, _log_measurement)
+	_fits_btn = _button("Save FITS", row4, save_fits)
 	_status = _label("")
 	_status.add_theme_font_size_override("font_size", 13)
 	_status.add_theme_color_override("font_color", Color(0.7, 0.8, 0.9))
@@ -114,6 +128,13 @@ func _ready() -> void:
 	_tex_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_tex_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_view.add_child(_tex_rect)
+	_overlay = Control.new()
+	_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_overlay.draw.connect(_draw_overlay)
+	_view.add_child(_overlay)
+	_view.mouse_default_cursor_shape = Control.CURSOR_CROSS
+	_view.gui_input.connect(_on_view_input)
 
 	_info = RichTextLabel.new()
 	_info.bbcode_enabled = true
@@ -249,11 +270,164 @@ func _on_frame(f: Dictionary) -> void:
 	_tex_rect.texture = ImageTexture.create_from_image(f["display"])
 	_status.text = "%s  %s  %s  X=%.2f" % [f["target"]["name"], f["band"], _fmt_exp(f["exptime"]), f["airmass"]]
 	_info.text = _frame_summary(f)
+	_overlay.queue_redraw()
 	frame_ready(f)
 
-## Hook for photometry (overridden in later phases).
-func frame_ready(_f: Dictionary) -> void:
-	pass
+## After every exposure: measure the target at the chip centre.
+func frame_ready(f: Dictionary) -> void:
+	_comp = {}
+	_meas = {}
+	if f["target"]["star"] >= 0 and f["saturated_frac"] < 0.5:
+		var c: float = (f["npix"] - 1) * 0.5
+		measure_at(Vector2(c, c))
+	_refresh_buttons()
+
+# ---------------------------------------------------------------------
+# Photometry
+# ---------------------------------------------------------------------
+func _scale() -> float:
+	return _view.size.x / float(frame.get("npix", 256))
+
+func _to_screen(p: Vector2) -> Vector2:
+	var n: int = frame["npix"]
+	var k: float = _scale()
+	return Vector2((p.x + 0.5) * k, (n - 0.5 - p.y) * k)
+
+func _to_pixel(s: Vector2) -> Vector2:
+	var n: int = frame["npix"]
+	var k: float = _scale()
+	return Vector2(s.x / k - 0.5, n - 0.5 - s.y / k)
+
+func _on_view_input(e: InputEvent) -> void:
+	if frame.is_empty() or _task >= 0:
+		return
+	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+		measure_at(_to_pixel(e.position))
+
+func measure_at(p: Vector2) -> Dictionary:
+	var band: Dictionary = catalog.bands[frame["band"]]
+	var m: Dictionary = Photometry.measure_frame(frame, band, p)
+	if not m.get("ok", false):
+		_info.text = _frame_summary(frame) + "\n[color=#ff8866]Nothing measurable there.[/color]"
+		return m
+	if m["name"] == "" and m["star"] < 0:
+		m["name"] = "field star"
+	_meas = m
+	_info.text = _frame_summary(frame) + "\n" + _meas_text(m)
+	_overlay.queue_redraw()
+	_refresh_buttons()
+	return m
+
+func _meas_text(m: Dictionary) -> String:
+	var who: String = m["name"] if m["name"] != "" else "star"
+	var s: String = "[b]%s[/b]  at (%.1f, %.1f)\n" % [who, m["x"] + 1.0, m["y"] + 1.0]
+	s += "counts %.0f ± %.0f e⁻  ·  sky %.0f e⁻/px  ·  S/N %.0f\n" % [m["flux"], m["err"], m["sky"], m["snr"]]
+	s += "instrumental %.3f  ·  [b]%s = %.3f ± %.3f[/b]" % [m["inst_mag"], frame["band"], m["mag"], m["mag_err"]]
+	if m.has("true_mag"):
+		s += "  [color=#8899aa](catalog %.3f)[/color]" % m["true_mag"]
+	if m["saturated"]:
+		s += "\n[color=#ffaa55]Saturated! Shorter exposure.[/color]"
+	if not _comp.is_empty() and _comp != m:
+		var d: Vector2 = Photometry.differential(m, _comp)
+		s += "\nΔ%s vs %s = [b]%+.3f ± %.3f[/b]" % [frame["band"], _comp["name"], d.x, d.y]
+	return s
+
+func _set_comparison() -> void:
+	if _meas.is_empty():
+		return
+	_comp = _meas
+	_info.text = _frame_summary(frame) + "\nComparison set: [b]%s[/b] (%.3f). Now click another star." % [_comp["name"], _comp["mag"]]
+	_overlay.queue_redraw()
+
+func _log_measurement() -> void:
+	if _meas.is_empty():
+		return
+	log_measurement(_meas)
+	_status.text = "logged %s %s = %.3f" % [_meas["name"], frame["band"], _meas["mag"]]
+
+func log_measurement(m: Dictionary) -> void:
+	ObservingLog.append(frame["jd"], m["name"], frame["band"], m["mag"], m["mag_err"], frame["airmass"], frame["exptime"])
+
+func _refresh_buttons() -> void:
+	_comp_btn.disabled = _meas.is_empty()
+	_log_btn.disabled = _meas.is_empty() or _meas.get("saturated", false)
+	_fits_btn.disabled = frame.is_empty()
+
+func _draw_overlay() -> void:
+	if frame.is_empty():
+		return
+	var k: float = _scale()
+	for item in [[_comp, Color(0.4, 0.8, 1.0)], [_meas, Color(0.4, 1.0, 0.5)]]:
+		var m: Dictionary = item[0]
+		if m.is_empty():
+			continue
+		var c: Vector2 = _to_screen(Vector2(m["x"], m["y"]))
+		_overlay.draw_arc(c, m["r_ap"] * k, 0, TAU, 48, item[1], 1.5)
+		_overlay.draw_arc(c, m["r_in"] * k, 0, TAU, 48, item[1] * Color(1, 1, 1, 0.5), 1.0)
+		_overlay.draw_arc(c, m["r_out"] * k, 0, TAU, 48, item[1] * Color(1, 1, 1, 0.5), 1.0)
+	# Compass: N up, E left.
+	var o := Vector2(_view.size.x - 28, _view.size.y - 28)
+	_overlay.draw_line(o, o + Vector2(0, -18), Color(1, 1, 0.6, 0.7), 1.5)
+	_overlay.draw_line(o, o + Vector2(-18, 0), Color(1, 1, 0.6, 0.7), 1.5)
+	_overlay.draw_string(get_theme_default_font(), o + Vector2(-4, -21), "N", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 0.6, 0.8))
+	_overlay.draw_string(get_theme_default_font(), o + Vector2(-30, 4), "E", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 0.6, 0.8))
+
+# ---------------------------------------------------------------------
+# FITS export (+ a truth sidecar so the synthesis can be checked)
+# ---------------------------------------------------------------------
+func save_fits() -> String:
+	if frame.is_empty():
+		return ""
+	var path: String = write_frame_fits(frame, catalog)
+	_status.text = ("saved %s" % ProjectSettings.globalize_path(path)) if path != "" else "FITS write failed"
+	return path
+
+## Writes <target>_<band>_<jd>.fits and a .truth.json sidecar into
+## user://observations; returns the FITS path ("" on failure).
+static func write_frame_fits(frame: Dictionary, catalog) -> String:
+	ObservingLog.ensure_dir()
+	var stem: String = "%s_%s_%.5f" % [String(frame["target"]["name"]).validate_filename().replace(" ", "_"), frame["band"], frame["jd"]]
+	var path: String = ObservingLog.DIR + "/" + stem + ".fits"
+	var c: float = (frame["npix"] - 1) * 0.5
+	var cards: Array = [
+		["DATE-OBS", _jd_to_isot(frame["jd"]), "UT, mid-exposure"],
+		["JD", frame["jd"], "Julian Date"],
+		["EXPTIME", frame["exptime"], "s"],
+		["FILTER", frame["band"], String(catalog.bands[frame["band"]].get("filter", ""))],
+		["OBJECT", frame["target"]["name"]],
+		["RA", rad_to_deg(frame["ra"]), "deg, J2000, pointing"],
+		["DEC", rad_to_deg(frame["dec"]), "deg, J2000, pointing"],
+		["AIRMASS", frame["airmass"]],
+		["SITELAT", frame["lat"], "deg"],
+		["SITELONG", frame["lon"], "deg, east positive"],
+		["BUNIT", "electron"],
+		["GAIN", 1.0, "e-/ADU"],
+		["RDNOISE", frame["read_noise"], "e-"],
+		["SATURATE", frame["full_well"], "e-"],
+		["APERTURE", frame["area_m2"], "m^2 collecting area"],
+		["FWHM", frame["fwhm_px"], "px"],
+		["SKYMAG", frame["sky_mag"], "mag/arcsec^2"],
+		["CTYPE1", "RA---TAN"], ["CTYPE2", "DEC--TAN"],
+		["CRPIX1", c + 1.0], ["CRPIX2", c + 1.0],
+		["CRVAL1", rad_to_deg(frame["ra"])], ["CRVAL2", rad_to_deg(frame["dec"])],
+		["CDELT1", -frame["scale_arcsec"] / 3600.0], ["CDELT2", frame["scale_arcsec"] / 3600.0],
+		["ORIGIN", "WonkyLands"],
+	]
+	var err: Error = FitsWriter.write(path, frame["image"], frame["npix"], cards)
+	if err != OK:
+		return ""
+	var truth: Array = []
+	for s in frame["truth"]:
+		truth.append({"x": s["x"], "y": s["y"], "mag": s["mag"], "e": s["e"], "name": s["name"]})
+	var tf := FileAccess.open(ObservingLog.DIR + "/" + stem + ".truth.json", FileAccess.WRITE)
+	tf.store_string(JSON.stringify({"note": "x,y 0-based, row 0 = FITS row 1", "sky_e": frame["sky_e"], "stars": truth}))
+	tf.close()
+	return path
+
+static func _jd_to_isot(jd: float) -> String:
+	var s: String = load("res://telescope/Observatory.gd").jd_to_string(jd)
+	var secs: float = fposmod((jd + 0.5) * 86400.0, 60.0)
+	return s.replace(" ", "T") + ":%06.3f" % secs
 
 func _frame_summary(f: Dictionary) -> String:
 	var s: String = "sky %.1f mag/″²  ·  FWHM %.1f px (%.0f″)  ·  %d stars on chip" % [
