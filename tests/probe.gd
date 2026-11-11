@@ -6,7 +6,12 @@ extends Node
 ##   --fps=S0,S1     average FPS between seconds S0 and S1, print, quit
 ##   --look=ALT,AZ   point the player camera at alt/az (deg)
 ##   --nostars       disable the star field (A/B perf runs)
-##   --expose=NAME   place a telescope, expose NAME, show the panel
+##   --seed=N        fix the world seed (same terrain and observatory site)
+##   --at=SPOT       stand by the hilltop observatory looking at it:
+##                   spawn (stay put), far, out, side, back, door, in
+##   --noobs         hide the observatory (A/B perf runs)
+##   --walkin        walk from the path through the door; print if inside
+##   --expose=NAME   step into the observatory, expose NAME, show the panel
 ##   --exp=S --band=B --monitor --warp=X   exposure, filter, monitor, time warp
 ##   --varsonly --search=TEXT --noexpose    target-picker states
 ##   --click [--zoom=Z --nocomp --fits --colour]   measure / comparison /
@@ -18,6 +23,7 @@ var _t: float = 0.0
 var _frames: int = 0
 var _fps_t0: float = -1.0
 var _done: bool = false
+var _done_at: bool = false
 var _proc_ms: float = 0.0
 var _draws: float = 0.0
 
@@ -25,6 +31,8 @@ func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		var kv: PackedStringArray = a.trim_prefix("--").split("=", true, 1)
 		_args[kv[0]] = kv[1] if kv.size() > 1 else ""
+	if _args.has("seed"):
+		seed(int(_args["seed"]))
 	var tg: Node = load("res://terrain_generator.tscn").instantiate()
 	if _args.has("hour"):
 		tg.start_time = float(_args["hour"])
@@ -43,6 +51,15 @@ func _process(delta: float) -> void:
 			p.set("_yaw", p.rotation.y)
 			if cam:
 				cam.rotation.x = deg_to_rad(float(la[0]))
+	if _args.has("at") and (_t > 3.0 and not _args.has("walkin") or _t < 3.1):
+		_stand_at(String(_args["at"]))
+	if _args.has("walkin") and _t > 3.1 and not _done:
+		Input.action_press("player_forward")
+		if _t > 9.0:
+			_done = true
+			Input.action_release("player_forward")
+			var obs = get_tree().root.find_child("HillObservatory", true, false)
+			print("PROBE_WALKIN inside=", obs.can_use(World.get_player()), " at ", obs.to_local(World.get_player().global_position))
 	if _args.has("debugstars") and Engine.get_process_frames() % 60 == 0:
 		var sf = get_tree().root.find_child("StarField", true, false)
 		if sf:
@@ -65,3 +82,32 @@ func _process(delta: float) -> void:
 			if _t >= float(r[1]):
 				print("PROBE_FPS %.1f over %.1fs  process %.2f ms  draws %.0f" % [_frames / (_t - _fps_t0), _t - _fps_t0, _proc_ms / _frames, _draws / _frames])
 				get_tree().quit()
+
+## Put the player at a named spot relative to the observatory (local −Z
+## is its door side) and aim the camera at the dome or the barrel.
+func _stand_at(spot: String) -> void:
+	var obs = get_tree().root.find_child("HillObservatory", true, false)
+	var p = World.get_player()
+	if obs == null or p == null:
+		return
+	if not _done_at:
+		_done_at = true
+		obs.visible = not _args.has("noobs")
+		print("PROBE_OBS alt %.0f az %.0f yaw %.0f " % [rad_to_deg(obs._alt), rad_to_deg(obs._az), rad_to_deg(obs.rotation.y)], "site ", obs.global_position, "  %.0f m from spawn" % Vector2(obs.global_position.x - 15.0, obs.global_position.z + 10.0).length())
+	var spots: Dictionary = {"far": Vector3(-25, 9, -80), "out": Vector3(13, 4, -20), "side": Vector3(22, 6, 4), "back": Vector3(-8, 6, 22), "door": Vector3(0, 0, -11), "in": Vector3(-1.2, 0, 3.2)}
+	var look: Vector3 = obs.to_global(Vector3(0, 6.0, 0))
+	if spots.has(spot):
+		var at: Vector3 = obs.to_global(spots[spot])
+		at.y = (obs.global_position.y + 1.3) if spot == "in" else World.get_terrain_height(at.x, at.z) + 1.0 + spots[spot].y
+		p.global_position = at
+		p.velocity = Vector3.ZERO
+		if spot == "in":
+			look = obs.to_global(Vector3(0, 2.6, -0.5))
+		elif spot == "door":
+			look = obs.to_global(Vector3(0, 2.4, 0))
+	var d: Vector3 = look - p.global_position - Vector3(0, 0.7, 0)
+	p.rotation.y = atan2(-d.x, -d.z)
+	p.set("_yaw", p.rotation.y)
+	var cam: Camera3D = p.get_node_or_null("Camera3D")
+	if cam:
+		cam.rotation.x = atan2(d.y, Vector2(d.x, d.z).length())

@@ -264,8 +264,8 @@ func place_trees_in_chunk(chunk_pos: Vector2, biome_type: int) -> void:
 		if terrain_height < water_level + 0.5:
 			continue
 
-		# Don't plant on the runway or inside the base footprint.
-		if typeof(World) != TYPE_NIL and World.is_in_base_core(world_x, world_z):
+		# Don't plant on the runway, the base or the observatory hilltop.
+		if typeof(World) != TYPE_NIL and World.is_reserved(world_x, world_z):
 			continue
 
 		var candidates: Array = []
@@ -455,7 +455,7 @@ func place_far_trees_in_chunk(chunk_pos: Vector2, biome_type: int, chunk_size: i
 			continue
 		# Keep base footprint clear too, so the runway doesn't have
 		# impostor trees phasing in.
-		if typeof(World) != TYPE_NIL and World.is_in_base_core(world_x, world_z):
+		if typeof(World) != TYPE_NIL and World.is_reserved(world_x, world_z):
 			continue
 
 		var candidates: Array = []

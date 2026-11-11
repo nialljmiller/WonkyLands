@@ -101,6 +101,7 @@ func _ready():
 	biome_noise.seed = randi() + 100
 	biome_noise.fractal_octaves = 3
 	biome_noise.frequency = 0.01
+	_pick_observatory_site()
 
 	# Astro owns the WorldEnvironment now (no fallback add_sky_environment).
 	if enable_astronomical_system:
@@ -650,10 +651,37 @@ func get_terrain_height(x: float, z: float) -> float:
 	var biome := determine_biome(Vector2(x, z))
 	var natural: float = apply_biome_height_adjustments(base, biome, Vector2(x, z))
 	if typeof(World) != TYPE_NIL:
-		var blend: float = World.base_flatten_blend(x, z)
+		var hill: float = World.obs_flatten_blend(x, z)
+		if hill > 0.0:
+			natural = lerp(natural, World.obs_site.y, hill)
+		var blend: float = World.base_flatten_blend(x, z)   # the base always wins
 		if blend > 0.0:
-			return lerp(natural, World.BASE_HEIGHT, blend)
+			natural = lerp(natural, World.BASE_HEIGHT, blend)
 	return natural
+
+## Hilltop observatory site: the highest natural ground (less 0.1 m per m
+## from spawn) in the 3×3 chunks around spawn, with its plateau clear of
+## the base's flatten zone and flight corridor (|x| < 90) and in one
+## biome; raised a few metres so it reads as a hill. Runs before any chunk is built (workers read World.obs_site).
+func _pick_observatory_site() -> void:
+	if typeof(World) == TYPE_NIL:
+		return
+	World.obs_site = Vector3.INF
+	var best := Vector3(150.0, 0.0, -150.0)
+	var best_score: float = -INF
+	var c: int = chunk_size
+	for x in range(-c, 2 * c, 8):
+		for z in range(-2 * c, c, 8):
+			var d: float = Vector2(x, z).length()
+			if absf(x) < 90.0 or absf(d - World.BASE_BIOME_RADIUS) < World.OBS_FLAT_RADIUS + 8.0:
+				continue
+			var h: float = get_terrain_height(x, z)
+			var score: float = h - 0.1 * Vector2(x - 15.0, z + 10.0).length()   # nearer spawn wins ties
+			if score > best_score:
+				best_score = score
+				best = Vector3(x, h, z)
+	best.y = maxf(best.y, water_level + 2.0) + 8.0
+	World.obs_site = best
 
 
 # Determine biome based on position

@@ -202,7 +202,7 @@ func _make_multimesh(kind: String, transforms: Array[Transform3D], tints: Array[
 # Base footprint (runway, cabin, flattened airfield) stays clear of
 # undergrowth; OriginBase builds its own ground there.
 func _is_excluded(x: float, z: float) -> bool:
-	return World.is_in_base_core(x, z)
+	return World.is_reserved(x, z)
 
 # ---------------------------------------------------------------------
 # Meshes + materials (built once, shared by every chunk)

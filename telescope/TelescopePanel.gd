@@ -334,6 +334,10 @@ func set_exptime(t: float) -> void:
 	_exp_slider.value = log(clampf(t, 0.001, 316.0)) / log(10.0)
 
 func _on_target_changed() -> void:
+	if telescope != null and engine != null and catalog != null:   # turn the dome
+		var tgt: Dictionary = current_target()
+		var snap: Dictionary = SkyModel.snapshot(engine)
+		telescope.point_at(SkyModel.radec_to_dir(tgt["ra"], tgt["dec"], snap["lst"], snap["lat"]))
 	if _auto.button_pressed:
 		_apply_auto()
 	_update_hints()

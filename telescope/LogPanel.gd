@@ -17,7 +17,7 @@ const BAND_COLORS: Dictionary = {"B": Color(0.45, 0.62, 1.0), "V": Color(0.45, 0
 	"I": Color(0.85, 0.35, 0.6), "g": Color(0.3, 0.85, 0.8), "r": Color(1.0, 0.65, 0.3), "i": Color(0.8, 0.6, 0.45)}
 const NIGHT_COLORS: Array = [Color(0.55, 0.85, 1.0), Color(1.0, 0.75, 0.4), Color(0.6, 1.0, 0.6),
 	Color(1.0, 0.55, 0.75), Color(0.8, 0.7, 1.0), Color(1.0, 1.0, 0.55)]
-const HOW_TO: String = "No observations yet. Here's how to make a light curve:\n\n1   Press T to place the telescope, walk up to it and press F.\n2   Pick a variable star (VAR), e.g. Algol, and press Expose.\n3   Press Monitor tonight, close the panel and press N to warp time.\n4   Come back here with L: the curve fills in night by night."
+const HOW_TO: String = "No observations yet. Here's how to make a light curve:\n\n1   Visit the observatory on the hill, step inside and press F.\n2   Pick a variable star (VAR), e.g. Algol, and press Expose.\n3   Press Monitor tonight, close the panel and press N to warp time.\n4   Come back here with L: the curve fills in night by night."
 
 var _rows: Array = []
 var _data: Dictionary = {}           # band -> {t, m, e, X} for the target

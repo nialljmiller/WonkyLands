@@ -2,10 +2,13 @@ extends Node3D
 ## Telescope — a little 80 mm refractor on a wooden tripod.
 ##
 ## Purely a prop: primitive meshes, no physics body, no shadows on the
-## small parts. The Observatory places it and swings the tube toward
-## whatever it's told to point at (local horizon-frame direction).
+## small parts. Swings the tube toward whatever it's told to point at
+## (horizon-frame direction). Base of HillObservatory, which overrides
+## _build() and the slew limits; the tripod is unused for now.
 
-const SLEW_DEG_PER_S: float = 40.0
+var slew_deg_per_s: float = 40.0
+var min_alt: float = deg_to_rad(-5.0)
+var use_range_m: float = 3.0
 
 var _alt_pivot: Node3D = null     # rotates in altitude
 var _az_pivot: Node3D = null      # rotates in azimuth
@@ -14,6 +17,14 @@ var _alt: float = deg_to_rad(30.0)
 var _az: float = 0.0
 
 func _ready() -> void:
+	_build()
+	_apply()
+
+## Player close enough to use it (F).
+func can_use(p: Node3D) -> bool:
+	return p.global_position.distance_to(global_position) < use_range_m
+
+func _build() -> void:
 	var wood := StandardMaterial3D.new()
 	wood.albedo_color = Color(0.55, 0.38, 0.22)
 	wood.roughness = 0.8
@@ -83,7 +94,6 @@ func _ready() -> void:
 	cam.material_override = dark
 	cam.position = Vector3(0, 0, 0.3)
 	_alt_pivot.add_child(cam)
-	_apply()
 
 ## Point the tube along a horizon-frame direction (+Y up, −Z north).
 func point_at(dir: Vector3) -> void:
@@ -93,11 +103,12 @@ func point_at(dir: Vector3) -> void:
 func _process(delta: float) -> void:
 	var t_alt: float = asin(clampf(_target_dir.y, -1.0, 1.0))
 	var t_az: float = atan2(-_target_dir.x, -_target_dir.z)   # Godot yaw: 0 = −Z
-	var step: float = deg_to_rad(SLEW_DEG_PER_S) * delta
-	_alt = move_toward(_alt, maxf(t_alt, deg_to_rad(-5.0)), step)
+	var step: float = deg_to_rad(slew_deg_per_s) * delta
+	t_alt = maxf(t_alt, min_alt)
+	_alt = move_toward(_alt, t_alt, step)
 	_az = _az + clampf(wrapf(t_az - _az, -PI, PI), -step, step)
 	_apply()
-	if absf(_alt - maxf(t_alt, deg_to_rad(-5.0))) < 1e-3 and absf(wrapf(t_az - _az, -PI, PI)) < 1e-3:
+	if absf(_alt - t_alt) < 1e-3 and absf(wrapf(t_az - _az, -PI, PI)) < 1e-3:
 		set_process(false)
 
 func _apply() -> void:

@@ -114,6 +114,22 @@ func base_flatten_blend(x: float, z: float) -> float:
 	var fz: float = dz / BASE_BLEND_MARGIN
 	return 1.0 - smoothstep(0.0, 1.0, max(fx, fz))
 
+# Hilltop observatory: TerrainGenerator picks the site once per world
+# (centre XZ, plateau height y) before any chunk builds. The terrain is
+# flat at obs_site.y out to OBS_FLAT_RADIUS and blends back to natural
+# over OBS_BLEND_MARGIN, so the building always sits on a hilltop.
+const OBS_FLAT_RADIUS: float = 16.0
+const OBS_BLEND_MARGIN: float = 40.0
+var obs_site: Vector3 = Vector3.INF
+
+func obs_flatten_blend(x: float, z: float) -> float:
+	var d: float = Vector2(x - obs_site.x, z - obs_site.z).length()
+	return 1.0 - smoothstep(OBS_FLAT_RADIUS, OBS_FLAT_RADIUS + OBS_BLEND_MARGIN, d)
+
+## Ground kept clear of trees, scatter and food: base core + observatory.
+func is_reserved(x: float, z: float) -> bool:
+	return is_in_base_core(x, z) or Vector2(x - obs_site.x, z - obs_site.z).length() < OBS_FLAT_RADIUS + 8.0
+
 func is_in_base_biome(x: float, z: float) -> bool:
 	# Slightly larger than the flatten area so biome texturing doesn't
 	# show a seam right at the edge of the runway.

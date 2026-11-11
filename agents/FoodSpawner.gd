@@ -48,9 +48,13 @@ func consume(berry: Node3D) -> void:
 func _pick_position() -> Vector3:
 	# Uniform in disc, with a mild bias away from the centre (base) so
 	# berries don't all land on the runway.
-	var r: float = home_radius * (0.25 + 0.7 * _rng.randf())
-	var a: float = _rng.randf() * TAU
-	var p: Vector3 = home_center + Vector3(cos(a) * r, 0.0, sin(a) * r)
+	var p: Vector3 = home_center
+	for _try in 8:   # not inside the observatory
+		var r: float = home_radius * (0.25 + 0.7 * _rng.randf())
+		var a: float = _rng.randf() * TAU
+		p = home_center + Vector3(cos(a) * r, 0.0, sin(a) * r)
+		if not World.is_reserved(p.x, p.z):
+			break
 	if _terrain != null:
 		p.y = _terrain.get_terrain_height(p.x, p.z) + 0.08
 	return p

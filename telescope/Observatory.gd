@@ -1,8 +1,7 @@
 extends Node3D
 ## Observatory — the player's astronomy kit.
 ##
-##   T  place the telescope in front of you (again to move it)
-##   F  (interact) use the telescope when standing next to it
+##   F  (interact) use the telescope inside the hilltop observatory
 ##   N  time warp: ×60 → ×600 → ×3600 → ×60
 ##   L  observing log / light curves
 ##   Esc closes any open panel
@@ -13,18 +12,17 @@ extends Node3D
 
 const SkyCatalog = preload("res://telescope/SkyCatalog.gd")
 const SkyModel = preload("res://telescope/SkyModel.gd")
-const TelescopeScript = preload("res://telescope/Telescope.gd")
+const HillObservatoryScript = preload("res://telescope/HillObservatory.gd")
 const TelescopePanelScript = preload("res://telescope/TelescopePanel.gd")
 const LogPanelScript = preload("res://telescope/LogPanel.gd")
 const UiStyle = preload("res://telescope/UiStyle.gd")
 
 const WARP_STEPS: Array = [60.0, 600.0, 3600.0]
-const USE_RANGE_M: float = 3.0
 
 var engine = null    # AstronomyEngine, set by TerrainGenerator
 
 var catalog = null
-var telescope: Node3D = null
+var telescope: Node3D = null    # the HillObservatory (dome + barrel)
 var panel = null
 var log_panel = null
 var _layer: CanvasLayer = null
@@ -55,9 +53,20 @@ func _ready() -> void:
 	_hint.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_layer.add_child(_hint)
 
+	# The observatory sits on the hill TerrainGenerator flattened for it
+	# (a permanent chunk, so it never streams out); door faces the base.
+	if typeof(World) != TYPE_NIL and World.obs_site.is_finite():
+		telescope = HillObservatoryScript.new()
+		telescope.name = "HillObservatory"
+		telescope.position = World.obs_site
+		telescope.rotation.y = atan2(World.obs_site.x, World.obs_site.z)
+		telescope.scale = Vector3.ONE * 1.3     # storybook-big: a landmark from spawn
+		add_child(telescope)
+
 	panel = TelescopePanelScript.new()
 	panel.engine = engine
 	panel.catalog = catalog
+	panel.telescope = telescope
 	panel.look_dir_provider = _look_dir
 	panel.visible = false
 	panel.closed.connect(close_panels)
@@ -88,8 +97,6 @@ func _look_dir() -> Vector3:
 func _process(delta: float) -> void:
 	var p := _player()
 	if _player_free(p):
-		if Input.is_action_just_pressed("telescope_place"):
-			place_telescope()
 		if Input.is_action_just_pressed("time_warp"):
 			cycle_warp()
 		if Input.is_action_just_pressed("interact") and _near_telescope(p) and not _vehicle_claims(p):
@@ -115,7 +122,7 @@ func _vehicle_claims(p: Node3D) -> bool:
 	return false
 
 func _near_telescope(p: Node3D) -> bool:
-	return telescope != null and p != null and p.global_position.distance_to(telescope.global_position) < USE_RANGE_M
+	return telescope != null and p != null and telescope.can_use(p)
 
 func cycle_warp() -> void:
 	if engine == null:
@@ -123,27 +130,6 @@ func cycle_warp() -> void:
 	var k: int = WARP_STEPS.find(engine.time_scale)
 	engine.time_scale = WARP_STEPS[(k + 1) % WARP_STEPS.size()]
 	_update_hud(_player())
-
-func place_telescope() -> void:
-	var p := _player()
-	if p == null:
-		return
-	if telescope == null:
-		telescope = TelescopeScript.new()
-		telescope.name = "Telescope"
-		get_parent().add_child(telescope)
-		panel.telescope = telescope
-	var fwd: Vector3 = -p.global_transform.basis.z
-	fwd.y = 0.0
-	fwd = fwd.normalized() if fwd.length() > 0.01 else Vector3.FORWARD
-	var spot: Vector3 = p.global_position + fwd * 1.8
-	var space := get_world_3d().direct_space_state
-	var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(spot + Vector3.UP * 20.0, spot + Vector3.DOWN * 50.0, 0xFFFFFFFF, [p.get_rid()]))
-	if not hit.is_empty():
-		spot.y = hit.position.y
-	else:
-		spot.y = p.global_position.y - 0.9
-	telescope.global_position = spot
 
 func open_panel(c: Control) -> void:
 	close_panels()
@@ -193,14 +179,16 @@ static func jd_to_string(jd: float) -> String:
 	return "%04d-%02d-%02d %02d:%02d" % [year, month, day, mins / 60, mins % 60]
 
 # ---------------------------------------------------------------------
-# Dev hook for tests/probe.gd: place, aim and expose without input.
+# Dev hook for tests/probe.gd: enter the dome, aim and expose without input.
 # ---------------------------------------------------------------------
 func debug_drive(args: Dictionary) -> void:
 	if args.has("click"):
 		await _debug_click(args)
 		return
 	if args.has("expose"):
-		place_telescope()
+		var p := _player()
+		if p and telescope:
+			p.global_position = telescope.to_global(Vector3(0, 1.3, 2.0))
 		open_panel(panel)
 		if not panel.select_target_by_name(String(args["expose"])):
 			push_warning("probe: target %s not up" % args["expose"])
