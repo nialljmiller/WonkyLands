@@ -8,9 +8,10 @@ extends Node
 ##   --nostars       disable the star field (A/B perf runs)
 ##   --seed=N        fix the world seed (same terrain and observatory site)
 ##   --at=SPOT       stand by the hilltop observatory looking at it:
-##                   spawn (stay put), far, out, side, back, door, in
+##                   spawn (stay put), far, out, side, back, foot, door, in
 ##   --noobs         hide the observatory (A/B perf runs)
-##   --walkin        walk from the path through the door; print if inside
+##   --walkin[=S]    walk forward S s (default 6) from --at (door, or foot
+##                   of the path); print whether the player ended up inside
 ##   --expose=NAME   step into the observatory, expose NAME, show the panel
 ##   --exp=S --band=B --monitor --warp=X   exposure, filter, monitor, time warp
 ##   --varsonly --search=TEXT --noexpose    target-picker states
@@ -55,11 +56,12 @@ func _process(delta: float) -> void:
 		_stand_at(String(_args["at"]))
 	if _args.has("walkin") and _t > 3.1 and not _done:
 		Input.action_press("player_forward")
-		if _t > 9.0:
+		if _t > 3.1 + float(_args["walkin"] if _args["walkin"] != "" else "6"):
 			_done = true
 			Input.action_release("player_forward")
 			var obs = get_tree().root.find_child("HillObservatory", true, false)
 			print("PROBE_WALKIN inside=", obs.can_use(World.get_player()), " at ", obs.to_local(World.get_player().global_position))
+			get_tree().quit()
 	if _args.has("debugstars") and Engine.get_process_frames() % 60 == 0:
 		var sf = get_tree().root.find_child("StarField", true, false)
 		if sf:
@@ -94,7 +96,7 @@ func _stand_at(spot: String) -> void:
 		_done_at = true
 		obs.visible = not _args.has("noobs")
 		print("PROBE_OBS alt %.0f az %.0f yaw %.0f " % [rad_to_deg(obs._alt), rad_to_deg(obs._az), rad_to_deg(obs.rotation.y)], "site ", obs.global_position, "  %.0f m from spawn" % Vector2(obs.global_position.x - 15.0, obs.global_position.z + 10.0).length())
-	var spots: Dictionary = {"far": Vector3(-25, 9, -80), "out": Vector3(13, 4, -20), "side": Vector3(22, 6, 4), "back": Vector3(-8, 6, 22), "door": Vector3(0, 0, -11), "in": Vector3(-1.2, 0, 3.2)}
+	var spots: Dictionary = {"far": Vector3(-25, 9, -80), "out": Vector3(13, 4, -20), "side": Vector3(22, 6, 4), "back": Vector3(-8, 6, 22), "door": Vector3(0, 0, -11), "foot": Vector3(0, 0, -42), "in": Vector3(-1.2, 0, 3.2)}
 	var look: Vector3 = obs.to_global(Vector3(0, 6.0, 0))
 	if spots.has(spot):
 		var at: Vector3 = obs.to_global(spots[spot])

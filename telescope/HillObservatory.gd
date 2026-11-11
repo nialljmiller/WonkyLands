@@ -209,7 +209,7 @@ func _build() -> void:
 	_mesh(_alt_pivot, _frustum(0.12, 0.16, 0.35), dark, Transform3D(along, Vector3(0, 0, 1.0)))
 
 	# A winding stepping-stone path down toward the base, with lanterns.
-	_build_path(stone, dark)
+	_build_path(_mat(Color(0.82, 0.76, 0.66)), dark)
 	var t := Timer.new()
 	t.wait_time = 1.0
 	t.autostart = true
@@ -227,10 +227,10 @@ func _build_path(stone: Material, dark: Material) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 27
 	var d: float = R_BASE + 3.4
-	while d < World.OBS_FLAT_RADIUS + World.OBS_BLEND_MARGIN:
+	while d < 45.0:
 		var side: float = sin(d * 0.11) * 4.0 * clampf((d - R_BASE - 3.0) / 8.0, 0.0, 1.0)
 		var at: Vector3 = to_global(Vector3(side, 0, -d))
-		at.y = World.get_terrain_height(at.x, at.z) + 0.03
+		at.y = World.get_terrain_height(at.x, at.z) - 0.04   # sunk: flush on slopes
 		var s: float = rng.randf_range(0.8, 1.15)
 		stones.append(Transform3D(Basis(Vector3.UP, rng.randf() * TAU).scaled(Vector3(s, 1, s)), at))
 		if stones.size() % 6 == 3:

@@ -659,10 +659,10 @@ func get_terrain_height(x: float, z: float) -> float:
 			natural = lerp(natural, World.BASE_HEIGHT, blend)
 	return natural
 
-## Hilltop observatory site: the highest natural ground (less 0.1 m per m
+## Hilltop observatory site: the highest natural ground (less 0.2 m per m
 ## from spawn) in the 3×3 chunks around spawn, with its plateau clear of
-## the base's flatten zone and flight corridor (|x| < 90) and in one
-## biome; raised a few metres so it reads as a hill. Runs before any chunk is built (workers read World.obs_site).
+## the base's flatten zone and flight corridor (|x| < 90) and its slopes
+## in one biome; raised a few metres so it reads as a hill. Runs before any chunk is built (workers read World.obs_site).
 func _pick_observatory_site() -> void:
 	if typeof(World) == TYPE_NIL:
 		return
@@ -676,12 +676,22 @@ func _pick_observatory_site() -> void:
 			if absf(x) < 90.0 or absf(d - World.BASE_BIOME_RADIUS) < World.OBS_FLAT_RADIUS + 8.0:
 				continue
 			var h: float = get_terrain_height(x, z)
-			var score: float = h - 0.1 * Vector2(x - 15.0, z + 10.0).length()   # nearer spawn wins ties
-			if score > best_score:
+			var score: float = h - 0.2 * Vector2(x - 15.0, z + 10.0).length()   # nearer spawn wins ties
+			if score > best_score and _one_biome_around(Vector2(x, z), World.OBS_FLAT_RADIUS + World.OBS_BLEND_MARGIN * 0.6):
 				best_score = score
 				best = Vector3(x, h, z)
 	best.y = maxf(best.y, water_level + 2.0) + 8.0
 	World.obs_site = best
+
+## Biome heights jump at borders; keep the walkable hill inside one biome.
+func _one_biome_around(c: Vector2, r: float) -> bool:
+	var b: int = determine_biome(c)
+	for k in 16:
+		var a: float = TAU * k / 16.0
+		for f in [0.5, 1.0]:
+			if determine_biome(c + Vector2(cos(a), sin(a)) * r * f) != b:
+				return false
+	return true
 
 
 # Determine biome based on position

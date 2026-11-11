@@ -119,7 +119,7 @@ func base_flatten_blend(x: float, z: float) -> float:
 # flat at obs_site.y out to OBS_FLAT_RADIUS and blends back to natural
 # over OBS_BLEND_MARGIN, so the building always sits on a hilltop.
 const OBS_FLAT_RADIUS: float = 16.0
-const OBS_BLEND_MARGIN: float = 40.0
+const OBS_BLEND_MARGIN: float = 60.0     # wide, so even mountain sites stay walkable
 var obs_site: Vector3 = Vector3.INF
 
 func obs_flatten_blend(x: float, z: float) -> float:
