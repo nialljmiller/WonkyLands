@@ -11,7 +11,7 @@ jobs:
     name: Export
     runs-on: ubuntu-latest
     container:
-      image: barichello/godot-ci:4.2.2
+      image: barichello/godot-ci:4.5.2
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,8 +20,8 @@ jobs:
 
       - name: Setup export templates
         run: |
-          mkdir -p ~/.local/share/godot/export_templates/4.2.2.stable
-          cp -r /root/.local/share/godot/export_templates/4.2.2.stable/* ~/.local/share/godot/export_templates/4.2.2.stable/
+          mkdir -p ~/.local/share/godot/export_templates/4.5.2.stable
+          cp -r /root/.local/share/godot/export_templates/4.5.2.stable/* ~/.local/share/godot/export_templates/4.5.2.stable/
 
       - name: Create export presets
         run: |
@@ -64,8 +64,8 @@ jobs:
           application/trademarks=""
 
           [preset.1]
-          name="Linux/X11"
-          platform="Linux/X11"
+          name="Linux"
+          platform="Linux"
           runnable=true
           dedicated_server=false
           custom_features=""
@@ -96,7 +96,7 @@ jobs:
           mkdir -p build/linux
           
           godot --headless --export-release "Windows Desktop"
-          godot --headless --export-release "Linux/X11"
+          godot --headless --export-release "Linux"
           
           chmod +x build/linux/WonkyLands.x86_64
 
